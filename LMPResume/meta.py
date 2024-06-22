@@ -6,7 +6,7 @@
 # This software is released under the MIT License.
 # https://opensource.org/licenses/MIT
 
-# Last modified: 16-06-2024 12:30:40
+# Last modified: 22-06-2024 15:08:25
 
 from pathlib import Path
 from abc import abstractmethod
@@ -174,8 +174,9 @@ class StateMgrProtocol(SerialProtocol):
     @abstractmethod
     def load_script(self, module_path: Path) -> None: ...
 
+    @property
     @abstractmethod
-    def make_proxy(self) -> StateProxyProtocol: ...
+    def proxy(self) -> StateProxyProtocol: ...
 
     @abstractmethod
     def run(self) -> None: ...

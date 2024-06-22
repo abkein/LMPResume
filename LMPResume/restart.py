@@ -28,7 +28,7 @@ def main():
     parser.add_argument("--time", action="store", type=int, required=True)
     args = parser.parse_args()
 
-    cmd = f"LMPResume {shlex.quote(Path(args.module).as_posix())}"
+    cmd = f"LMPResume run {shlex.quote(Path(args.module).as_posix())}"
     cmds = shlex.split(cmd)
 
     time.sleep(args.time)

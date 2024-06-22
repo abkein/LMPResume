@@ -23,7 +23,6 @@ import lammps.formats
 from .restart import restart
 from .serial import MakeDecoder, UniversalJSONEncoder
 from .meta import NoTimeLeft, SettingsProtocol, StateProxyProtocol, StateMgrProtocol
-from . import util
 
 
 class StateProxy(StateProxyProtocol):
@@ -45,6 +44,13 @@ class StateProxy(StateProxyProtocol):
     def rebind(self) -> Self:
         return self.__mgr.rebind()  # type: ignore
 
+    def has_time(self) -> bool:
+        return self.remaining_time > 0
+
+    def check_time(self) -> bool:
+        if not self.has_time(): raise NoTimeLeft()
+        else: return True
+
     @property
     def remaining_time(self) -> float:
         return self.__mgr.settings.max_time - (time.time() - self.__mgr.starttime) - self.__mgr.settings.delta_safe
@@ -57,8 +63,8 @@ class StateProxy(StateProxyProtocol):
     def run_no(self) -> int:
         return self.__mgr.run_no
 
-    def update(self, _dict: Dict[str, Any]) -> Self:
-        for k, v in _dict.items(): self[k] = v
+    def update(self, _dict: Dict[Any, Any]) -> Self:
+        for k, v in _dict.items(): self[self._keytransform(k)] = v
         return self
 
     def items(self) -> Generator[Tuple[str, Any], Any, None]:
@@ -68,17 +74,17 @@ class StateProxy(StateProxyProtocol):
     def __repr__(self) -> str:
         return self.__mgr.state.__repr__()
 
-    def __contains__(self, key: int) -> bool:
-        return key in self.__mgr.state
+    def __contains__(self, key: Any) -> bool:
+        return self._keytransform(key) in self.__mgr.state
 
-    def __getitem__(self, key: str) -> Any:
-        return self.__mgr.state[key]
+    def __getitem__(self, key: Any) -> Any:
+        return self.__mgr.state[self._keytransform(key)]
 
-    def __setitem__(self, key: str, value: Any) -> None:
-        self.__mgr.state[key] = value
+    def __setitem__(self, key: Any, value: Any) -> None:
+        self.__mgr.state[self._keytransform(key)] = value
 
-    def __delitem__(self, key: str) -> None:
-        del self.__mgr.state[key]
+    def __delitem__(self, key: Any) -> None:
+        del self.__mgr.state[self._keytransform(key)]
 
     def __iter__(self) -> Generator[str, Any, None]:
         # self.ptr = 0
@@ -92,15 +98,22 @@ class StateProxy(StateProxyProtocol):
         # self.ptr += 1
         # return self[self._store.keys()[self.ptr-1]]
 
+    def _keytransform(self, key: Any) -> str:
+        return str(key)
+
     def __len__(self) -> int:
         return len(self.__mgr.state)
 
 
 @dataclass
 class Settings(SettingsProtocol):
+    startup: Callable[[StateProxy], None]
+    init: Callable[[StateProxy], None]
     scheme: List[Callable[[StateProxy], None]]  # type: ignore
     setup: Callable[[StateProxy], None]
     restart: Callable[[StateProxy], None]
+    end: Callable[[StateProxy], None]
+    shutdown: Callable[[StateProxy], None]
     max_time: int
     lmpname: str
     types: Union[List[Type], None]
@@ -111,7 +124,6 @@ class StateManager(StateMgrProtocol):
     run_no: int
     ptr: int
     state: Dict[str, Any]
-    info: Dict[str, Any]
     lmp: lammps.lammps
     statefile: Path
     starttime: float
@@ -128,12 +140,12 @@ class StateManager(StateMgrProtocol):
         self.scriptpath = scriptpath
         self.ptr = 0
         self.state = {}
-        self.info = {}
         self.load_script(self.scriptpath)
         self.is_restart = self.statefile.exists()
         if self.is_restart:
             print("LMPResume: Using configuration in statefile")
             self.load()
+            self.settings.startup(self.proxy)
 
     def __json__(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -141,7 +153,6 @@ class StateManager(StateMgrProtocol):
             "run_no": self.run_no,
             "ptr": self.ptr,
             "state": self.state,
-            "info": self.info
         }
         return d
 
@@ -151,7 +162,6 @@ class StateManager(StateMgrProtocol):
         instance.check_2type_set("run_no", int, **kwargs)
         instance.check_2type_set("ptr", int, **kwargs)
         instance.check_2type_set("state", dict, **kwargs)
-        instance.check_2type_set("info", dict, **kwargs)
         return instance
 
     def __enter__(self) -> Self:
@@ -163,9 +173,11 @@ class StateManager(StateMgrProtocol):
         self.dump()
         self.lmp.close()
         self.lmp = lammps.lammps(self.settings.lmpname)
-        return self.make_proxy()
+        return self.proxy
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
+        self.settings.shutdown(self.proxy)
+
         self.dump()
         self.lmp.close()
         self.lmp.finalize()
@@ -219,16 +231,21 @@ class StateManager(StateMgrProtocol):
         script = getattr(module, module_name)
         self.settings = script.LMPResume_setting
 
-    def make_proxy(self) -> StateProxy:
+    @property
+    def proxy(self) -> StateProxy:
         return StateProxy(self)
 
     def run(self) -> None:
         if self.is_restart:
             print("Running restart")
             with lammps.OutputCapture() as capture:
-                self.settings.restart(self.make_proxy())
+                self.settings.restart(self.proxy)
+        else:
+            with lammps.OutputCapture() as capture:
+                self.settings.init(self.proxy)
+
         print("Setting up")
-        self.settings.setup(self.make_proxy())
+        self.settings.setup(self.proxy)
         if self.is_restart:
             with lammps.OutputCapture() as capture:
                 self.lmp.command("run 0")
@@ -237,9 +254,10 @@ class StateManager(StateMgrProtocol):
             if i < last_ptr: continue
             print(f"Running {func.__name__}")
             with lammps.OutputCapture() as capture:
-                func(self.make_proxy())
+                func(self.proxy)
             self.ptr += 1
             if time.time() - self.starttime > self.settings.max_time - self.settings.delta_safe:
                 raise NoTimeLeft()
 
-        util.extract_thermo(Path("log.lammps"))
+        with lammps.OutputCapture() as capture:
+                self.settings.end(self.proxy)

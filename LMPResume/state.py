@@ -14,15 +14,14 @@ import time
 import importlib.util
 from pathlib import Path
 from dataclasses import dataclass
-from typing_extensions import Self
 from typing import Dict, Any, Generator, Tuple, List, Callable, Union, Type
 
 import lammps
 import lammps.formats
+from typing_extensions import Self
 
-from .restart import restart
 from .serial import MakeDecoder, UniversalJSONEncoder
-from .meta import NoTimeLeft, SettingsProtocol, StateProxyProtocol, StateMgrProtocol
+from .meta import NoTimeLeft, SettingsProtocol, StateProxyProtocol, StateMgrProtocol, Comm
 
 
 class StateProxy(StateProxyProtocol):
@@ -62,6 +61,10 @@ class StateProxy(StateProxyProtocol):
     @property
     def run_no(self) -> int:
         return self.__mgr.run_no
+
+    @property
+    def comm(self) -> Comm:
+        return self.__mgr.comm
 
     def update(self, _dict: Dict[Any, Any]) -> Self:
         for k, v in _dict.items(): self[self._keytransform(k)] = v
@@ -121,6 +124,7 @@ class Settings(SettingsProtocol):
 
 
 class StateManager(StateMgrProtocol):
+    cwd: Path
     run_no: int
     ptr: int
     state: Dict[str, Any]
@@ -131,8 +135,15 @@ class StateManager(StateMgrProtocol):
     scriptpath: Path
     thermofile: Path
     is_restart: bool
+    comm: Comm
+    rank: int
+    size: int
 
-    def __init__(self, scriptpath: Path, *args, **kwargs) -> None:
+    def __init__(self, scriptpath: Path, cwd: Path, comm: Comm, *args, **kwargs) -> None:
+        self.cwd = cwd
+        self.comm = comm
+        self.rank = comm.Get_rank()
+        self.size = comm.Get_size()
         self.run_no = 0
         self.starttime = time.time()
         self.statefile = Path.cwd() / "state.json"
@@ -145,7 +156,8 @@ class StateManager(StateMgrProtocol):
         if self.is_restart:
             print("LMPResume: Using configuration in statefile")
             self.load()
-            self.settings.startup(self.proxy)
+
+        self.settings.startup(self.proxy)
 
     def __json__(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -182,13 +194,14 @@ class StateManager(StateMgrProtocol):
         self.lmp.close()
         self.lmp.finalize()
 
-        if exc_type == NoTimeLeft:
-            restart(2*self.settings.delta_safe, self.scriptpath)
+        if exc_type != NoTimeLeft and self.rank == 0:
+            (self.cwd / "NORESTART").touch(exist_ok=True)
 
     def dump(self) -> None:
-        text = json.dumps(self, cls=UniversalJSONEncoder, indent=4)
-        with self.statefile.open('w') as fp:
-            fp.write(self._obfuscate(text))
+        if self.rank == 0:
+            text = json.dumps(self, cls=UniversalJSONEncoder, indent=4)
+            with self.statefile.open('w') as fp:
+                fp.write(self._obfuscate(text))
 
     def _obfuscate(self, text: str) -> str:
         return text

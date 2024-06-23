@@ -13,31 +13,40 @@ import sys
 import argparse
 from pathlib import Path
 
+from mpi4py import MPI
+
 from .meta import NoTimeLeft
 from .state import StateManager
 
 
-def main():
+def main() -> int:
     os.environ["OMP_NUM_THREADS"] = "1"
     parser = argparse.ArgumentParser('LMPResume')
+    parser.add_argument("module", action="store", type=str)
+    parser.add_argument('--cwd', action='store', type=str, default=None)
 
-    sub_parsers = parser.add_subparsers(help="sub-command help", dest="command")
+    cwd = Path.cwd()
 
-    parser_init = sub_parsers.add_parser("run", help="Run simulation")
-    parser_init.add_argument("module")
+    # sub_parsers = parser.add_subparsers(help="sub-command help", dest="command")
 
-    parser_thermo = sub_parsers.add_parser("thermo", help="Extract thermo from file")
-    parser_thermo.add_argument("file")
+    # parser_init = sub_parsers.add_parser("run", help="Run simulation")
+    # parser_init.add_argument("module")
+
+    # parser_thermo = sub_parsers.add_parser("thermo", help="Extract thermo from file")
+    # parser_thermo.add_argument("file")
 
     args = parser.parse_args()
 
-    if args.command == "run":
-        try:
-            with StateManager(Path(args.module).resolve()) as st:
-                st.run()
-                pass
-        except NoTimeLeft as e:
+    if args.cwd is not None: os.chdir(Path(args.cwd).resolve())
+
+    try:
+        with StateManager(Path(args.module).resolve(), cwd, MPI.COMM_WORLD) as st:
+            st.run()
             pass
+    except NoTimeLeft as e:
+        pass
+
+    MPI.Finalize()
 
     return 0
 

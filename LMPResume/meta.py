@@ -10,10 +10,14 @@
 
 from pathlib import Path
 from abc import abstractmethod
-from typing_extensions import Self
 from typing import Generator, List, Callable, Tuple, Type, Protocol, Dict, Any, Union, Iterable, get_origin, get_args, runtime_checkable
 
+from mpi4py import MPI
 import lammps
+from typing_extensions import Self
+
+
+Comm = Union[MPI.Intercomm, MPI.Intracomm]
 
 
 def is_simple(_type) -> bool:
@@ -149,6 +153,7 @@ class StateMgrProtocol(SerialProtocol):
     starttime: float
     settings: SettingsProtocol
     scriptpath: Path
+    comm: Comm
 
     @abstractmethod
     def __enter__(self) -> Self: ...

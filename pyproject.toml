@@ -20,11 +20,11 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Physics",
     "Topic :: Scientific/Engineering :: Chemistry",
 ]
-# dependencies = ['MPMU >= 0.0.2', 'pysbatch-ng >= 0.0.1', 'toml']
+dependencies = ['pysbatch-ng >= 0.0.1', 'toml', 'typing_extensions']
 
 [project.scripts]
 LMPResume = "LMPResume.main:main"
-LMPResumeRestart = "LMPResume.restart:main"
+LMPRun = "LMPResume.run:main"
 
 [project.urls]
 "Homepage" = "https://github.com/Architect0rr/MDDPN"

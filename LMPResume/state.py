@@ -6,11 +6,12 @@
 # This software is released under the MIT License.
 # https://opensource.org/licenses/MIT
 
-# Last modified: 16-06-2024 21:36:13
+# Last modified: 25-06-2024 07:00:41
 
 import sys
 import json
 import time
+import logging
 import importlib.util
 from pathlib import Path
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ import lammps
 import lammps.formats
 from typing_extensions import Self
 
+from .util import CaptureManager
 from .serial import MakeDecoder, UniversalJSONEncoder
 from .meta import NoTimeLeft, SettingsProtocol, StateProxyProtocol, StateMgrProtocol, Comm
 
@@ -66,6 +68,10 @@ class StateProxy(StateProxyProtocol):
     def comm(self) -> Comm:
         return self.__mgr.comm
 
+    @property
+    def capture(self) -> CaptureManager:
+        return self.__mgr.capture
+
     def update(self, _dict: Dict[Any, Any]) -> Self:
         for k, v in _dict.items(): self[self._keytransform(k)] = v
         return self
@@ -111,7 +117,7 @@ class StateProxy(StateProxyProtocol):
 @dataclass
 class Settings(SettingsProtocol):
     startup: Callable[[StateProxy], None]
-    init: Callable[[StateProxy], None]
+    build: Callable[[StateProxy], None]
     scheme: List[Callable[[StateProxy], None]]  # type: ignore
     setup: Callable[[StateProxy], None]
     restart: Callable[[StateProxy], None]
@@ -121,6 +127,22 @@ class Settings(SettingsProtocol):
     lmpname: str
     types: Union[List[Type], None]
     delta_safe: int
+
+
+def minilog(name: str) -> logging.Logger:
+    logger = logging.getLogger(name)
+    logger.handlers.clear()
+    logger.setLevel(logging.DEBUG)
+    formatter: logging.Formatter = logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s')
+    soutHandler = logging.StreamHandler(stream=sys.stdout)
+    soutHandler.setLevel(logging.DEBUG)
+    soutHandler.setFormatter(formatter)
+    logger.addHandler(soutHandler)
+    serrHandler = logging.StreamHandler(stream=sys.stderr)
+    serrHandler.setFormatter(formatter)
+    serrHandler.setLevel(logging.WARNING)
+    logger.addHandler(serrHandler)
+    return logger
 
 
 class StateManager(StateMgrProtocol):
@@ -138,26 +160,34 @@ class StateManager(StateMgrProtocol):
     comm: Comm
     rank: int
     size: int
+    logger: logging.Logger
+    capturefile: Path
+    capture: CaptureManager
 
-    def __init__(self, scriptpath: Path, cwd: Path, comm: Comm, *args, **kwargs) -> None:
+    def __init__(self, scriptpath: Path, do_capture: Union[bool, None], cwd: Path, comm: Comm, *args, **kwargs) -> None:
         self.cwd = cwd
         self.comm = comm
         self.rank = comm.Get_rank()
         self.size = comm.Get_size()
+        self.logger = minilog("LMPResume").getChild(f"{self.rank}")
+        self.logger.info(f"The world is {self.size}")
         self.run_no = 0
         self.starttime = time.time()
-        self.statefile = Path.cwd() / "state.json"
+        self.statefile = Path.cwd() / ".state.json"
         self.thermofile = Path.cwd() / "thermo.csv"
         self.scriptpath = scriptpath
+        self.capturefile = Path.cwd() / "capturedump"
+        self.capture = CaptureManager(self.capturefile, do_capture)
         self.ptr = 0
         self.state = {}
         self.load_script(self.scriptpath)
         self.is_restart = self.statefile.exists()
         if self.is_restart:
-            print("LMPResume: Using configuration in statefile")
+            self.rootlog("LMPResume: Using configuration in statefile")
             self.load()
 
-        self.settings.startup(self.proxy)
+    def rootlog(self, message: str) -> None:
+        if self.rank == 0: self.logger.info(message)
 
     def __json__(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -187,7 +217,7 @@ class StateManager(StateMgrProtocol):
         self.lmp = lammps.lammps(self.settings.lmpname)
         return self.proxy
 
-    def __exit__(self, exc_type, exc_value, exc_traceback):
+    def __exit__(self, exc_type: Type[Exception], exc_value: Exception, exc_traceback) -> None:
         self.settings.shutdown(self.proxy)
 
         self.dump()
@@ -248,29 +278,30 @@ class StateManager(StateMgrProtocol):
     def proxy(self) -> StateProxy:
         return StateProxy(self)
 
-    def run(self) -> None:
-        if self.is_restart:
-            print("Running restart")
-            with lammps.OutputCapture() as capture:
-                self.settings.restart(self.proxy)
-        else:
-            with lammps.OutputCapture() as capture:
-                self.settings.init(self.proxy)
+    def run(self, endflag: bool = False) -> None:
+        if self.run_no == 0:
+            with self.capture.file(): self.settings.build(self.proxy)
 
-        print("Setting up")
-        self.settings.setup(self.proxy)
+        self.logger.debug(f"Endflag is {'true' if endflag else 'false'}")
+        self.settings.startup(self.proxy)
         if self.is_restart:
-            with lammps.OutputCapture() as capture:
-                self.lmp.command("run 0")
-        last_ptr = self.ptr
-        for i, func in enumerate(self.settings.scheme):
-            if i < last_ptr: continue
-            print(f"Running {func.__name__}")
-            with lammps.OutputCapture() as capture:
-                func(self.proxy)
-            self.ptr += 1
-            if time.time() - self.starttime > self.settings.max_time - self.settings.delta_safe:
-                raise NoTimeLeft()
+            self.logger.info("Running restart")
+            with self.capture.file(): self.settings.restart(self.proxy)
 
-        with lammps.OutputCapture() as capture:
-                self.settings.end(self.proxy)
+
+        self.logger.info("Setting up")
+        with self.capture.file(): self.settings.setup(self.proxy)
+        if self.is_restart:
+            with self.capture.file(): self.lmp.command("run 0")
+
+        if not endflag:
+            last_ptr = self.ptr
+            for i, func in enumerate(self.settings.scheme):
+                if i < last_ptr: continue
+                self.logger.info(f"Running {func.__name__}")
+                with self.capture.file(): func(self.proxy)
+                self.ptr += 1
+                if time.time() - self.starttime > self.settings.max_time - self.settings.delta_safe:
+                    raise NoTimeLeft()
+
+        with self.capture.file(): self.settings.end(self.proxy)

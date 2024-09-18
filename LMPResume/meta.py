@@ -16,6 +16,8 @@ from mpi4py import MPI
 import lammps
 from typing_extensions import Self
 
+from .util import CaptureManager
+
 
 Comm = Union[MPI.Intercomm, MPI.Intracomm]
 
@@ -154,6 +156,7 @@ class StateMgrProtocol(SerialProtocol):
     settings: SettingsProtocol
     scriptpath: Path
     comm: Comm
+    capture: CaptureManager
 
     @abstractmethod
     def __enter__(self) -> Self: ...

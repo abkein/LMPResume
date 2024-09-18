@@ -11,6 +11,7 @@
 import os
 import sys
 import argparse
+from typing import Union
 from pathlib import Path
 
 from mpi4py import MPI
@@ -24,6 +25,8 @@ def main() -> int:
     parser = argparse.ArgumentParser('LMPResume')
     parser.add_argument("module", action="store", type=str)
     parser.add_argument('--cwd', action='store', type=str, default=None)
+    parser.add_argument('--capture', choices=['yes', 'no', 'release'], type=str, default='release')
+    parser.add_argument('--end', action='store_true')
 
     cwd = Path.cwd()
 
@@ -39,14 +42,19 @@ def main() -> int:
 
     if args.cwd is not None: os.chdir(Path(args.cwd).resolve())
 
+    do_capture: Union[bool, None] = None
+    if args.capture == 'no':    do_capture = False
+    elif args.capture == 'yes': do_capture = True
+    else:                       do_capture = None
+
     try:
-        with StateManager(Path(args.module).resolve(), cwd, MPI.COMM_WORLD) as st:
-            st.run()
+        with StateManager(Path(args.module).resolve(), do_capture, cwd, MPI.COMM_WORLD) as st:
+            st.run(args.end)
             pass
     except NoTimeLeft as e:
         pass
 
-    MPI.Finalize()
+    # MPI.Finalize()
 
     return 0
 

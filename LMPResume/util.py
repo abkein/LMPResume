@@ -11,15 +11,31 @@
 import os
 import io
 import sys
+import logging
 import tempfile
 from pathlib import Path
-from typing import Type, Union, Dict
+from typing import Type, Union
 
 from typing_extensions import Self
 
 
-# derived from lammps.OutputCapture
-class OutputCaptureStr:
+def minilog(name: str) -> logging.Logger:
+    logger = logging.getLogger(name)
+    logger.handlers.clear()
+    logger.setLevel(logging.DEBUG)
+    formatter: logging.Formatter = logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s')
+    soutHandler = logging.StreamHandler(stream=sys.stdout)
+    soutHandler.setLevel(logging.DEBUG)
+    soutHandler.setFormatter(formatter)
+    logger.addHandler(soutHandler)
+    serrHandler = logging.StreamHandler(stream=sys.stderr)
+    serrHandler.setFormatter(formatter)
+    serrHandler.setLevel(logging.WARNING)
+    logger.addHandler(serrHandler)
+    return logger
+
+
+class OutputCaptureStr:  # derived from lammps.OutputCapture
     """ Utility class to capture library output into string variable """
 
     stdout_fd: int

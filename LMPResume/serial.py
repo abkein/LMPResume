@@ -30,6 +30,7 @@ def MakeDecoder(types2dec: List[Type]):
             return obj
     return UtilJSONDecoder
 
+
 class UniversalJSONEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, SerialProtocol):

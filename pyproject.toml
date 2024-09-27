@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Physics",
     "Topic :: Scientific/Engineering :: Chemistry",
 ]
-dependencies = ['typing_extensions', 'toml', 'mpi4py', 'lammps']
+dependencies = ['typing_extensions', 'toml', 'mpi4py', 'lammps', 'seriallib']
 
 [project.scripts]
 LMPResume = "LMPResume.main:main"

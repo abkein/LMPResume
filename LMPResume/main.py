@@ -13,13 +13,14 @@ import sys
 import json
 import argparse
 import importlib.util
-from typing import Union, List, Tuple, Type
+from types import ModuleType
+from typing import Union, Tuple, Type, Any, Iterable
 from pathlib import Path
 
 from mpi4py import MPI
+from seriallib import MakeDecoder, UniversalJSONEncoder, isserializable
 
-from .serial import MakeDecoder, UniversalJSONEncoder
-from .meta import NoTimeLeft, StateMgrProtocol, isserializable
+from .meta import NoTimeLeft, StateMgrProtocol
 from .state import StateManager
 
 
@@ -31,15 +32,15 @@ def obfuscate(s: str) -> str:
     return s
 
 
-def load(statefile: Path, types: Union[None, List, Tuple]) -> StateManager:
+def load(statefile: Path, gen_type: Type[StateMgrProtocol], types: Union[None, Iterable[Type[Any]]]) -> StateMgrProtocol:
     with statefile.open('r') as fp:
         text = deobfuscate(fp.read())
     tlst = [StateManager]
     if types is not None: tlst += types
-    return json.loads(text, cls=MakeDecoder(tlst))
+    return gen_type.__4dict__(**json.loads(text, cls=MakeDecoder(tlst)))
 
 
-def load_script(module_path: Path):
+def load_script(module_path: Path) -> ModuleType:
     module_name = module_path.parts[-1]
 
     module_init = module_path / "__init__.py"
@@ -54,10 +55,10 @@ def load_script(module_path: Path):
     if spec is None: raise ImportError(f"Cannot import module by path {module_path.as_posix()}: spec is None")
     if spec.loader is None: raise ImportError(f"Cannot import module by path {module_path.as_posix()}: spec.loader is None")
 
-    module = importlib.util.module_from_spec(spec)
+    module: ModuleType = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
-    script = getattr(module, module_name)
+    script: ModuleType = getattr(module, module_name)
     return script
 
 
@@ -108,16 +109,16 @@ def parse_args() -> Tuple[Path,  Union[bool, None], Path, bool, int, Union[Path,
     return cwd, do_capture, scriptpath, endflag, max_time, restf, ptr
 
 
-def load_types(script) -> Tuple[Union[None, Tuple], Type]:
-    types_tuple: Union[None, Tuple] = None
+def load_types(script: ModuleType) -> Tuple[Union[None, Tuple[Type[Any], ...]], Type[StateMgrProtocol]]:
+    types_tuple: Union[None, Tuple[Type[Any], ...]] = None
 
-    if not hasattr(script, "simulaton"):
+    if not hasattr(script, "simulation"):
         raise RuntimeError("Script has no 'simulation' object")
-    _sim = getattr(script, "simulation", None)
+    _sim: Union[Type[StateMgrProtocol], None] = getattr(script, "simulation", None)
     if _sim is None:
         raise RuntimeError("'simulation' object is None")
-    elif isinstance(_sim, type):
-        raise TypeError("Specified 'simulation' object is not a class")
+    elif not isinstance(_sim, type):
+        raise TypeError(f"Specified 'simulation' object is not a class: {str(type(_sim))}")
     elif not issubclass(_sim, StateMgrProtocol):
         raise TypeError("Specified 'simulation' class is not inherited from 'StateMgrProtocol'")
 
@@ -134,6 +135,13 @@ def load_types(script) -> Tuple[Union[None, Tuple], Type]:
     return types_tuple, _sim
 
 
+def dump(file: Path, simulation: StateMgrProtocol) -> None:
+    if MPI.COMM_WORLD.Get_rank() == 0:
+        text = json.dumps(simulation, cls=UniversalJSONEncoder, indent=4)
+        with file.open('w') as fp:
+            fp.write(obfuscate(text))
+
+
 def main() -> int:
     os.environ["OMP_NUM_THREADS"] = "1"
 
@@ -147,7 +155,7 @@ def main() -> int:
     simulation: StateMgrProtocol
     restart_flag = statefile.exists()
     if restart_flag:
-        simulation = load(statefile, types_tuple)
+        simulation = load(statefile, simType, types_tuple)
         simulation.attach(MPI.COMM_WORLD, max_time)
     else:
         simulation = simType(do_capture, cwd, MPI.COMM_WORLD, max_time)
@@ -159,13 +167,11 @@ def main() -> int:
             else:
                 st.first_run()
     except NoTimeLeft:
-        pass
+        MPI.COMM_WORLD.Barrier()
     finally:
-        text = json.dumps(simulation, cls=UniversalJSONEncoder, indent=4)
-        with statefile.open('w') as fp:
-            fp.write(obfuscate(text))
+        dump(statefile, simulation)
 
-    MPI.Finalize()
+    # MPI.Finalize()
 
     return 0
 

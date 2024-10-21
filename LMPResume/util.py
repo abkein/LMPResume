@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.8
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 # Copyright (c) 2023-2024 Perevoshchikov Egor
@@ -6,7 +6,7 @@
 # This software is released under the MIT License.
 # https://opensource.org/licenses/MIT
 
-# Last modified: 25-06-2024 07:00:38
+# Last modified: 02-05-2024 23:40:24
 
 import os
 import io
@@ -16,7 +16,15 @@ import tempfile
 from pathlib import Path
 from typing import Type, Union
 
-from typing_extensions import Self
+from marshmallow import fields
+
+
+class FieldPath(fields.Field):
+    def _deserialize(self, value: str, attr, data, **kwargs) -> Path:
+        return Path(value).resolve(True)
+
+    def _serialize(self, value: Path, attr, obj, **kwargs) -> str:
+        return value.as_posix()
 
 
 def minilog(name: str) -> logging.Logger:
@@ -49,7 +57,7 @@ class OutputCaptureStr:  # derived from lammps.OutputCapture
         self.stdout_fd = sys.stdout.fileno()
         self.captured_output = ""
 
-    def __enter__(self) -> Self:
+    def __enter__(self):
         if self.do_capture:
             self.tmpfile = tempfile.TemporaryFile(mode='w+b')
 
@@ -93,7 +101,7 @@ class OutputCaptureFile:
         self.do_capture = do_capture
         self.stdout_fd = sys.stdout.fileno()
 
-    def __enter__(self) -> Self:
+    def __enter__(self):
         if self.do_capture:
             self.fp = self.file.open('a')
 
@@ -135,3 +143,8 @@ class CaptureManager:
         if self.__do_capture is not None: cap = self.__do_capture
         elif do_capture is not None: cap = do_capture
         return OutputCaptureStr(cap)
+
+
+if __name__ == "__main__":
+    pass
+

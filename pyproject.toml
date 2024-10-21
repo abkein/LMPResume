@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "LMPResume"
-version = "0.0.1"
+version = "0.0.2"
 authors = [{ name = "Egor Perevoshchikov", email = "abkein@abkein.ru" }]
 description = "Test package"
 readme = "README.md"
 license = { text = "MIT License" }
-requires-python = ">=3.8"
+requires-python = ">=3.11"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Education",
@@ -20,10 +20,11 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Physics",
     "Topic :: Scientific/Engineering :: Chemistry",
 ]
-dependencies = ['typing_extensions', 'toml', 'mpi4py', 'lammps', 'seriallib']
+dependencies = ['toml', 'mpi4py', 'lammps', 'marshmallow']
 
 [project.scripts]
 LMPResume = "LMPResume.main:main"
+LMPRun = "LMPResume.run.main"
 
 [project.urls]
 "Homepage" = "https://github.com/Architect0rr/MDDPN"

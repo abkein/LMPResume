@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.8
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 # Copyright (c) 2023-2024 Perevoshchikov Egor
@@ -6,14 +6,12 @@
 # This software is released under the MIT License.
 # https://opensource.org/licenses/MIT
 
-# Last modified: 22-06-2024 15:08:25
+# Last modified: 02-05-2024 23:40:24
 
 from pathlib import Path
 from abc import abstractmethod
 from typing import Protocol, Union, Iterable
 
-from typing_extensions import Self
-from seriallib import SerialProtocol
 
 from .types import Comm
 
@@ -31,12 +29,12 @@ class SettingsProtocol(Protocol):
     delta_safe: int
 
 
-class StateMgrProtocol(SerialProtocol):
+class StateMgrProtocol:
     def __init__(self, *args, **kwargs) -> None:
         super().__init__()
 
     @abstractmethod
-    def __enter__(self) -> Self: ...
+    def __enter__(self): ...
 
     @abstractmethod
     def __exit__(self, exc_type, exc_value, exc_traceback): ...
@@ -52,4 +50,12 @@ class StateMgrProtocol(SerialProtocol):
 
 
 class NoTimeLeft(RuntimeError):
+    pass
+
+
+class FirstRunFallbackTrigger(RuntimeError):
+    pass
+
+
+if __name__ == "__main__":
     pass

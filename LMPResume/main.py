@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.8
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 # Copyright (c) 2023-2024 Perevoshchikov Egor
@@ -6,38 +6,31 @@
 # This software is released under the MIT License.
 # https://opensource.org/licenses/MIT
 
-# Last modified: 20-06-2024 19:16:56
+# Last modified: 02-05-2024 23:40:24
 
 import os
 import sys
 import json
+import toml
 import argparse
 import importlib.util
-from types import ModuleType
-from typing import Union, Tuple, Type, Any, Iterable
 from pathlib import Path
+from types import ModuleType
+from typing import Union, Any, Type
 
+import mpi4py
+mpi4py.rc.initialize = False
+mpi4py.rc.finalize = False
 from mpi4py import MPI
-from seriallib import MakeDecoder, UniversalJSONEncoder, isserializable
 
-from .meta import NoTimeLeft, StateMgrProtocol
-from .state import StateManager
+from pysbatch_ng.sbatch import Sbatch, SbatchSchema, Options, Platform
+from pysbatch_ng.execs import CMD
 
-
-def deobfuscate(s: str) -> str:
-    return s
+from .meta import NoTimeLeft, FirstRunFallbackTrigger
+from .state import StateManager, StateManagerSchema
 
 
-def obfuscate(s: str) -> str:
-    return s
-
-
-def load(statefile: Path, gen_type: Type[StateMgrProtocol], types: Union[None, Iterable[Type[Any]]]) -> StateMgrProtocol:
-    with statefile.open('r') as fp:
-        text = deobfuscate(fp.read())
-    tlst = [StateManager]
-    if types is not None: tlst += types
-    return gen_type.__4dict__(**json.loads(text, cls=MakeDecoder(tlst)))
+filename_conffile: str = "sbatch.toml"
 
 
 def load_script(module_path: Path) -> ModuleType:
@@ -62,119 +55,196 @@ def load_script(module_path: Path) -> ModuleType:
     return script
 
 
-def parse_args() -> Tuple[Path,  Union[bool, None], Path, bool, int, Union[Path, None], Union[int, None]]:
-    parser = argparse.ArgumentParser('LMPResume')
-    parser.add_argument("module", action="store", type=str, help="Module path")
-    parser.add_argument('--cwd', action='store', type=str, default=None, help="Current working directory. If not specified, default unix pwd is used.")
-    parser.add_argument('--max_time', action='store', type=int, default=0, help="Max run time in seconds. If unknown, default 0 should be used. -1 if unlimited.")
-    parser.add_argument('--restartfile', action='store', type=str, default=None, help="Restart file to read.")
-    parser.add_argument('--ptr', action='store', type=int, default=0, help="Default: 0")
-    parser.add_argument('--capture', choices=['yes', 'no', 'release'], type=str, default='release')
-    parser.add_argument('--end', action='store_true')
-    args = parser.parse_args()
+def load_schema(script: ModuleType) -> Type[StateManagerSchema]:
+    schema_name = "ManagerSchema"
+    if not hasattr(script, schema_name):
+        raise RuntimeError(f"Script has no '{schema_name}' object")
+    schema: Type[StateManagerSchema] | None = getattr(script, schema_name, None)
+    if schema is None:
+        raise RuntimeError(f"'{schema_name}' object is None")
+    elif not issubclass(schema, StateManagerSchema):
+        raise TypeError(f"Specified '{schema_name}' object is not a subclass of 'StateManagerSchema'")
 
-    if args.cwd is not None:
-        newcwd = Path(args.cwd).resolve()
-        if not newcwd.exists():
-            raise FileNotFoundError(f"Specified cwd does not exists: {newcwd.as_posix()}")
-        os.chdir(newcwd)
-
-    cwd = Path.cwd()
-
-    do_capture: Union[bool, None] = None
-    if args.capture == 'no':    do_capture = False
-    elif args.capture == 'yes': do_capture = True
-    else:                       do_capture = None
-
-    scriptpath = Path(args.module).resolve()
-    if not scriptpath.exists():
-        raise FileNotFoundError(f"Specified module path does not exists: {scriptpath.as_posix()}")
-
-    endflag: bool = bool(args.end)
-
-    max_time: int = int(args.max_time)
-
-    restf: Union[Path, None] = None
-    if args.restartfile is not None:
-        restf = Path(args.restartfile).resolve()
-        if not restf.exists():
-            raise FileNotFoundError(f"Specified restart file does not exists: {restf.resolve()}")
-
-    ptr: Union[int, None] = None
-    if args.ptr is not None:
-        ptr = int(args.ptr)
-        if ptr < 0:
-            raise RuntimeError("Specified ptr cannot be less than zero")
-
-    return cwd, do_capture, scriptpath, endflag, max_time, restf, ptr
+    return schema
 
 
-def load_types(script: ModuleType) -> Tuple[Union[None, Tuple[Type[Any], ...]], Type[StateMgrProtocol]]:
-    types_tuple: Union[None, Tuple[Type[Any], ...]] = None
+class AZAZ:
+    simulation: StateManager
+    cwd: Path
+    managerSchema: StateManagerSchema
+    endflag: bool
+    internal: bool
+    restartfile: Path | None = None
+    conffile: Path
+    modulepath: Path
+    tag: int | None = None
 
-    if not hasattr(script, "simulation"):
-        raise RuntimeError("Script has no 'simulation' object")
-    _sim: Union[Type[StateMgrProtocol], None] = getattr(script, "simulation", None)
-    if _sim is None:
-        raise RuntimeError("'simulation' object is None")
-    elif not isinstance(_sim, type):
-        raise TypeError(f"Specified 'simulation' object is not a class: {str(type(_sim))}")
-    elif not issubclass(_sim, StateMgrProtocol):
-        raise TypeError("Specified 'simulation' class is not inherited from 'StateMgrProtocol'")
+    def __init__(self):
+        parser = argparse.ArgumentParser('LMPResume')
+        parser.add_argument("module", action="store", type=str, help="Module path")
+        parser.add_argument("--internal", action="store_true", default=False)
+        parser.add_argument('--cwd', action='store', type=str, default=None, help="Current working directory. If not specified, default unix pwd is used.")
+        parser.add_argument('--max_time', action='store', type=int, default=0, help="Max run time in seconds. If unknown, default 0 should be used. -1 if unlimited.")
 
-    if hasattr(script, "types2serialize"):
-        types_tuple = getattr(script, "types2serialize", None)
-    if types_tuple is not None:
-        if not isinstance(types_tuple, tuple):
-            raise RuntimeError("Loaded types tuple is not a Tuple")
+        parser.add_argument('--capture', choices=['yes', 'no', 'release'], type=str, default='release')
+
+        parser.add_argument('--tag', action='store', type=int, default=None)
+        parser.add_argument('--conf', action='store', type=str, default=None)
+
+        parser.add_argument('--end', action='store_true')
+        parser.add_argument('--restartfile', action='store', type=str, default=None, help="Restart file to read.")
+        parser.add_argument('--ptr', action='store', type=int, default=0, help="Default: 0")
+        args = parser.parse_args()
+
+        self.internal = bool(args.internal)
+
+        self.cwd = Path.cwd()
+        if args.cwd is not None:
+            self.cwd = Path(args.cwd).resolve()
+            if not self.cwd.exists():
+                raise FileNotFoundError(f"Specified cwd does not exists: {self.cwd.as_posix()}")
+
+        self.conffile = Path(args.conf).resolve() if args.conf is not None else self.cwd / filename_conffile
+
+        data: dict[str, Any] = {"cwd": self.cwd.as_posix()}
+
+        if not self.restart_flag:
+            do_capture: Union[bool, None] = None
+            if args.capture == 'no':        do_capture = False
+            elif args.capture == 'yes':     do_capture = True
+            elif args.capture == 'release': do_capture = None
+
+            if args.capture is not None:
+                data["capture"] = do_capture
+
+        self.modulepath = Path(args.module).resolve()
+        if not self.modulepath.exists():
+            raise FileNotFoundError(f"Specified module path does not exists: {self.modulepath.as_posix()}")
+
+        self.managerSchema = load_schema(load_script(self.modulepath))()
+
+        self.endflag = bool(args.end)
+
+        max_time: int = int(args.max_time)
+
+        data["max_time"] = max_time
+
+        if args.tag is not None:
+            self.tag = args.tag
+
+        if args.restartfile is not None:
+            self.restartfile = Path(args.restartfile).resolve()
+            if not self.restartfile.exists():
+                raise FileNotFoundError(f"Specified restart file does not exists: {self.restartfile.as_posix()}")
+
+        ptr: Union[int, None] = None
+        if args.ptr is not None:
+            ptr = int(args.ptr)
+            if ptr < 0:
+                raise RuntimeError("Specified ptr cannot be less than zero")
+
+        if ptr is not None:
+            data["ptr"] = ptr
+
+        if self.restart_flag:
+            with self.statefile.open('r') as fp:
+                d = json.load(fp)
+            d.update(data)
+            data = d
+
+        _sim = self.managerSchema.load(data)
+        assert isinstance(_sim, StateManager)
+        self.simulation = _sim
+
+    def dumpit(self):
+        d = self.managerSchema.dump(self.simulation)
+        assert isinstance(d, dict)
+        with self.statefile.open('w') as fp:
+            json.dump(d, fp)
+
+    def get_sbatch(self):
+        if self.conffile.exists():
+            with self.conffile.open('r') as fp:
+                d = toml.load(fp)
+            sbatch = SbatchSchema().load(d)
+            if not isinstance(sbatch, Sbatch):
+                raise RuntimeError("")
+            if not sbatch.check(False):
+                raise RuntimeError("")
         else:
-            for _type in types_tuple:
-                if not isserializable(_type):
-                    raise RuntimeError(f"Type: {str(_type)} is not serializable")
+            sbatch = Sbatch(Options(), Platform(), self.cwd)
+        return sbatch
 
-    return types_tuple, _sim
+    def reborn(self):
+        self.simulation.run_no += 1
+        self.dumpit()
+        sbatch = self.get_sbatch()
 
+        sbatch.options.tag = self.tag
+        sbatch.options.job_number = self.simulation.run_no
 
-def dump(file: Path, simulation: StateMgrProtocol) -> None:
-    if MPI.COMM_WORLD.Get_rank() == 0:
-        text = json.dumps(simulation, cls=UniversalJSONEncoder, indent=4)
-        with file.open('w') as fp:
-            fp.write(obfuscate(text))
+        max_time = sbatch.platform.get_timelimit(sbatch.options.partition) if sbatch.options.partition is not None else 0
+        args_cmd = f"{self.modulepath.as_posix()} --internal --cwd={self.cwd.as_posix()} --max_time={max_time}"
+        if self.endflag:
+            args_cmd += f" --end"
 
+        if sbatch.options.cmd is None:
+            sbatch.options.cmd = CMD(
+                executable="LMPResume",
+                args=args_cmd
+            )
+        else:
+            sbatch.options.cmd.executable = "LMPResume"
+            sbatch.options.cmd.args = args_cmd
 
-def main() -> int:
-    os.environ["OMP_NUM_THREADS"] = "1"
+        after_args = f"{self.modulepath.as_posix()} --cwd={self.cwd.as_posix()} --conf={self.conffile.as_posix()}"
+        if self.tag is not None:
+            after_args += f" --tag={self.tag}"
+        after_cmd = CMD(
+            executable="LMPResume",
+            args=after_args
+        )
 
-    cwd, do_capture, scriptpath, endflag, max_time, restf, ptr = parse_args()
+        sbatch.run(True, poll_cmd=after_cmd)
 
-    script = load_script(scriptpath)
+    def main(self):
+        MPI.Init()
+        self.simulation.init()
+        self.simulation.attach(MPI.COMM_WORLD)
+        try:
+            with self.simulation as st:
+                if self.restart_flag:
+                    try:
+                        st.restart(self.endflag, self.restartfile)
+                    except FirstRunFallbackTrigger:
+                        st.first_run()
+                else:
+                    st.first_run()
+        except NoTimeLeft:
+            pass
+        finally:
+            if MPI.COMM_WORLD.Get_rank() == 0:
+                self.dumpit()
 
-    types_tuple, simType = load_types(script)
-
-    statefile = cwd / "state.json"
-    simulation: StateMgrProtocol
-    restart_flag = statefile.exists()
-    if restart_flag:
-        simulation = load(statefile, simType, types_tuple)
-        simulation.attach(MPI.COMM_WORLD, max_time)
-    else:
-        simulation = simType(do_capture, cwd, MPI.COMM_WORLD, max_time)
-
-    try:
-        with simulation as st:
-            if restart_flag:
-                st.restart(endflag, restf, ptr)
-            else:
-                st.first_run()
-    except NoTimeLeft:
         MPI.COMM_WORLD.Barrier()
-    finally:
-        dump(statefile, simulation)
 
-    # MPI.Finalize()
+        MPI.Finalize()
 
-    return 0
+    def run(self):
+        return self.main() if self.internal else self.reborn()
 
+    @property
+    def statefile(self) -> Path:
+        return self.cwd / "state.json"
+
+    @property
+    def restart_flag(self) -> bool:
+        return self.statefile.exists()
+
+
+def main():
+    return AZAZ().run()
 
 if __name__ == "__main__":
+    os.environ["OMP_NUM_THREADS"] = "1"
     sys.exit(main())

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.8
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 # Copyright (c) 2023-2024 Perevoshchikov Egor
@@ -6,47 +6,60 @@
 # This software is released under the MIT License.
 # https://opensource.org/licenses/MIT
 
-# Last modified: 25-09-2024 12:29:30
+# Last modified: 21-10-2024 04:41:54
 
 import time
 import logging
 from pathlib import Path
 from abc import abstractmethod
-from typing import Dict, Any, Iterable, Callable, Union, Type
+from typing import Any, Iterable, Callable, Union, Type
 from typing_extensions import Self
 
 import lammps
 import lammps.formats
-from seriallib import SerialProtocol
+from marshmallow import Schema, fields
 
-from .util import CaptureManager, minilog
-from .meta import NoTimeLeft, StateMgrProtocol, Comm
+from .util import CaptureManager, minilog, FieldPath
+from .meta import NoTimeLeft, FirstRunFallbackTrigger, StateMgrProtocol, Comm
+
+
+class StateManagerSchema(Schema):
+    cwd = FieldPath(missing=Path.cwd())
+    run_no = fields.Integer()
+    ptr = fields.Integer()
+    max_time = fields.Integer(missing=0, load_only=True)
+    lmpname = fields.String(missing="mpi")
+    delta_safe = fields.Integer(missing=5*60)
+    do_capture = fields.Boolean(allow_none=True, data_key='capture')
+    state = fields.Dict(keys=fields.String())
 
 
 class StateManager(StateMgrProtocol):
-    cwd: Path  # saved
-    run_no: int # saved
-    ptr: int # saved
-    state: Dict[str, Any] # saved
-    lmp: lammps.lammps # runtime set
-    starttime: float # runtime set
-    max_time: float # runtime set
-    lmpname: str # saved
-    delta_safe: int # saved
-    comm: Comm # runtime set
-    rank: int # runtime set
-    size: int # runtime set
-    logger: logging.Logger # runtime set
-    capturefile: Path # saved
-    do_capture: Union[bool, None] # saved
-    capture: CaptureManager # runtime set
-    restartPath: Path # saved
+    ptr: int
+    cwd: Path
+    rank: int
+    size: int
+    comm: Comm
+    run_no: int
+    lmpname: str
+    delta_safe: int
+    max_time: float
+    starttime: float
+    capturefile: Path
+    lmp: lammps.lammps
+    restart_folder: Path
+    state: dict[str, Any]
+    logger: logging.Logger
+    do_capture: bool | None
+    capture: CaptureManager
 
     @abstractmethod
     def user_init(self) -> None: ...
 
     def init(self) -> None:
         self.user_init()
+        self.capturefile = self.cwd / "capturedump"
+        self.restart_folder = self.cwd / "restarts"
         self.rank = self.comm.Get_rank()
         self.size = self.comm.Get_size()
         self.logger = minilog("LMPResume").getChild(f"{self.rank}")
@@ -54,59 +67,33 @@ class StateManager(StateMgrProtocol):
         self.starttime = time.time()
         self.capture = CaptureManager(self.capturefile, self.do_capture)
 
-    def __init__(self, do_capture: Union[bool, None], cwd: Path, comm: Comm, max_time: int, lmpname: str = "mpi", delta_safe: int = 5*60, *args, **kwargs) -> None:
+    def __init__(
+        self,
+        do_capture: bool | None = None,
+        cwd: Path = Path.cwd(),
+        max_time: int = 0,
+        lmpname: str = "mpi",
+        delta_safe: int = 5*60,
+        run_no: int = -1,
+        ptr: int = 0,
+        state: dict[str, Any] = {}
+        ) -> None:
         self.cwd = cwd
-        self.comm = comm
-        self.capturefile = self.cwd / "capturedump"
-        self.restartPath = self.cwd / "restarts"
         self.do_capture = do_capture
         self.max_time = max_time
         self.lmpname = lmpname
         self.delta_safe = delta_safe
-        self.run_no = 0
-        self.ptr = 0
-        self.state = {}
+        self.run_no = run_no
+        self.ptr = ptr
+        self.state = state
 
-        self.init()
-
-    def attach(self, comm: Comm, max_time: int = 0) -> None:
+    def attach(self, comm: Comm) -> None:
         self.comm = comm
-        self.max_time = max_time
 
         self.init()
 
     def rootlog(self, message: str) -> None:
         if self.rank == 0: self.logger.info(message)
-
-    def __2dict__(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
-            "__type": type(self).__name__,
-            "run_no": self.run_no,
-            "ptr": self.ptr,
-            "cwd": self.cwd.as_posix(),
-            "lmpname": self.lmpname,
-            "state": self.state,
-            "delta_safe": self.delta_safe,
-            "do_capture": self.do_capture,
-            "restartPath": self.restartPath,
-            "capturefile": self.capturefile,
-        }
-        return d
-
-    @classmethod
-    def __4dict__(cls, *args, **kwargs) -> Self:
-        instance = super().__new__(cls)
-        instance.check_2type_set("run_no", int, **kwargs)
-        instance.check_2type_set("ptr", int, **kwargs)
-        instance.check_2type_set("cwd", Path, **kwargs)
-        instance.check_2type_set("restartPath", Path, **kwargs)
-        instance.check_2type_set("capturefile", Path, **kwargs)
-        instance.check_2type_set("delta_safe", int, **kwargs)
-        instance.check_2type_set("lmpname", str, **kwargs)
-        instance.check_2type_set("state", dict, **kwargs)
-        instance.check_2type_set("do_capture", bool, True, **kwargs)
-
-        return instance
 
     def __enter__(self) -> Self:
         self.lmp = lammps.lammps(self.lmpname)
@@ -116,10 +103,10 @@ class StateManager(StateMgrProtocol):
     def __exit__(self, exc_type: Type[Exception], exc_value: Exception, exc_traceback) -> None:
         self.shutdown()
 
-        if self.rank == 0 and exc_value is not None: self.logger.exception(exc_value)
+        if self.rank == 0 and exc_value is not None and exc_type != NoTimeLeft: self.logger.exception(exc_value)
 
         self.lmp.close()
-        self.lmp.finalize()
+        # self.lmp.finalize()
 
         if exc_type != NoTimeLeft and self.rank == 0:
             (self.cwd / "NORESTART").touch(exist_ok=True)
@@ -155,35 +142,53 @@ class StateManager(StateMgrProtocol):
             raise NoTimeLeft()
 
     def find_restart(self) -> Path:
-        with self.capture.file():
-            lmp_1 = lammps.lammps(self.lmpname)
-            lmp_1.command(f"read_restart {(self.restartPath / 'restart.a').as_posix()}")
-            lmp_1.command(f"run 0")
-            step_a: Union[int, None] = lmp_1.get_thermo("step")
-            lmp_1.close()
-            lmp_1.finalize()
-        if step_a is None: raise RuntimeError("Error getting step")
+        a_restart = (self.restart_folder / 'restart.a')
+        b_restart = (self.restart_folder / 'restart.b')
 
-        with self.capture.file():
-            lmp_2 = lammps.lammps(self.lmpname)
-            lmp_2.command(f"read_restart {(self.restartPath / 'restart.a').as_posix()}")
-            lmp_2.command(f"run 0")
-            lmp_2.close()
-            lmp_2.finalize()
-            step_b: Union[int, None] = lmp_2.get_thermo("step")
-        if step_b is None: raise RuntimeError("Error getting step")
+        if a_restart.exists():
+            with self.capture.file():
+                lmp_1 = lammps.lammps(self.lmpname)
+                lmp_1.command(f"read_restart {a_restart.as_posix()}")
+                lmp_1.command(f"run 0")
+                step_a: Union[int, None] = lmp_1.get_thermo("step")
+                lmp_1.close()
+
+            if step_a is None: raise RuntimeError("Error getting step")
+        else:
+            step_a = -1
+
+        if b_restart.exists():
+            with self.capture.file():
+                lmp_2 = lammps.lammps(self.lmpname)
+                lmp_2.command(f"read_restart {b_restart.as_posix()}")
+                lmp_2.command(f"run 0")
+                step_b: Union[int, None] = lmp_2.get_thermo("step")
+                lmp_2.close()
+
+            if step_b is None: raise RuntimeError("Error getting step")
+        else:
+            step_b = -1
+
+        if step_a == -1 and step_b == -1:
+            raise FirstRunFallbackTrigger()
 
         if step_a > step_b:
-            return self.restartPath / 'restart.a'
+            return self.restart_folder / 'restart.a'
         else:
-            return self.restartPath / 'restart.b'
+            return self.restart_folder / 'restart.b'
 
     def read_restart(self, restartfile: Path) -> None:
+        self.logger.debug(f"Reading restart {restartfile.as_posix()}")
+        cmd = f"read_restart {restartfile.relative_to(self.cwd).as_posix()}"
+        self.logger.debug(f"CMD is: '{cmd}'")
         with self.capture.file():
-            self.lmp.command(f"read_restart {restartfile.as_posix()}")
+            self.lmp.command(cmd)
             self.lmp.command(f"run 0")
+        self.logger.debug("Readed restart")
 
     def first_run(self) -> None:
+        self.logger.info("Running first time")
+
         self.build()
 
         self.startup()
@@ -196,10 +201,7 @@ class StateManager(StateMgrProtocol):
 
         self.run(False)
 
-    def restart(self, endflag: bool, restartfile: Union[Path, None], ptr: Union[int, None]) -> None:
-        if ptr is not None:
-            self.ptr = ptr
-
+    def restart(self, endflag: bool, restartfile: Union[Path, None]) -> None:
         self.startup()
 
         _restartfile: Path
@@ -207,6 +209,8 @@ class StateManager(StateMgrProtocol):
             _restartfile = restartfile
         else:
             _restartfile = self.find_restart()
+
+        self.logger.info(f"Using restart {_restartfile.as_posix()}")
 
         self.read_restart(_restartfile)
 
@@ -232,6 +236,6 @@ class StateManager(StateMgrProtocol):
         with self.capture.file(): self.end()
 
 
-class LoopStageProtocol(SerialProtocol):
-    stage_key: str
-    stage_len: int
+if __name__ == "__main__":
+    pass
+

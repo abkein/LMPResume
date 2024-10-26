@@ -25,6 +25,7 @@ from mpi4py import MPI
 
 from pysbatch_ng.sbatch import Sbatch, SbatchSchema, Options, Platform
 from pysbatch_ng.execs import CMD
+from indexlib import Index
 
 from .meta import NoTimeLeft, FirstRunFallbackTrigger
 from .state import StateManager, StateManagerSchema
@@ -175,13 +176,31 @@ class AZAZ:
             sbatch = Sbatch(Options(), Platform(), self.cwd)
         return sbatch
 
+    def make_index(self):
+        index = Index(self.cwd)
+        found, _, cat = index.find_category("slurm")
+        if not found:
+            index.register_category("slurm", "Slurm related files")
+        if not index.isregistered(self.conffile):
+            index.register(self.conffile, "slurm", False, "Main slurm configuration file")
+        if index.issub(self.modulepath):
+            found, _, cat = index.find_category("sim")
+            if not found:
+                index.register_category("sim", "Simulation related files")
+            if not index.isregistered(self.modulepath):
+                index.register(self.modulepath, "sim", True, "Simulation run file")
+        index.commit()
+
     def reborn(self):
+        self.make_index()
         self.simulation.run_no += 1
         self.dumpit()
         sbatch = self.get_sbatch()
 
         sbatch.options.tag = self.tag
         sbatch.options.job_number = self.simulation.run_no
+        if not sbatch.check(False):
+            return
 
         max_time = sbatch.platform.get_timelimit(sbatch.options.partition) if sbatch.options.partition is not None else 0
         args_cmd = f"{self.modulepath.as_posix()} --internal --cwd={self.cwd.as_posix()} --max_time={max_time}"

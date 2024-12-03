@@ -6,29 +6,29 @@
 # This software is released under the MIT License.
 # https://opensource.org/licenses/MIT
 
-# Last modified: 02-05-2024 23:40:24
-
 import os
 import sys
 import json
 import toml
 import argparse
 import importlib.util
+from time import time
 from pathlib import Path
 from types import ModuleType
 from typing import Union, Any, Type
 
-import mpi4py
-mpi4py.rc.initialize = False
-mpi4py.rc.finalize = False
-from mpi4py import MPI
+# import mpi4py
+# mpi4py.rc.initialize = False
+# mpi4py.rc.finalize = False
+# from mpi4py import MPI
 
-from pysbatch_ng.sbatch import Sbatch, SbatchSchema, Options, Platform
+import pysbatch_ng
 from pysbatch_ng.execs import CMD
 from indexlib import Index
 
-from .meta import NoTimeLeft, FirstRunFallbackTrigger
+from .compress import copy_and_compress_folder_lzma
 from .state import StateManager, StateManagerSchema
+from .meta import NoTimeLeft, FirstRunFallbackTrigger
 
 
 filename_conffile: str = "sbatch.toml"
@@ -164,16 +164,17 @@ class AZAZ:
             json.dump(d, fp)
 
     def get_sbatch(self):
+        pysbatch_ng.log.configure('screen')
         if self.conffile.exists():
             with self.conffile.open('r') as fp:
                 d = toml.load(fp)
-            sbatch = SbatchSchema().load(d)
-            if not isinstance(sbatch, Sbatch):
+            sbatch = pysbatch_ng.Sbatch.from_schema(d)
+            if not isinstance(sbatch, pysbatch_ng.Sbatch):
                 raise RuntimeError("")
             if not sbatch.check(False):
                 raise RuntimeError("")
         else:
-            sbatch = Sbatch(Options(), Platform(), self.cwd)
+            sbatch = pysbatch_ng.Sbatch(pysbatch_ng.Options(), pysbatch_ng.Platform(), self.cwd)
         return sbatch
 
     def make_index(self):
@@ -195,6 +196,11 @@ class AZAZ:
         self.make_index()
         self.simulation.run_no += 1
         self.dumpit()
+
+        dest_fldr = Path("/scratch/perevoshchikyy/backups/")
+        dest_fldr = dest_fldr / f"{int(time())}_{self.cwd.name}"
+        copy_and_compress_folder_lzma(self.cwd, dest_fldr, 10)
+
         sbatch = self.get_sbatch()
 
         sbatch.options.tag = self.tag
@@ -227,9 +233,8 @@ class AZAZ:
         sbatch.run(True, poll_cmd=after_cmd)
 
     def main(self):
-        MPI.Init()
-        self.simulation.init()
-        self.simulation.attach(MPI.COMM_WORLD)
+        from mpi4py import MPI
+        self.simulation.attach(self.dumpit, MPI.COMM_WORLD)
         try:
             with self.simulation as st:
                 if self.restart_flag:

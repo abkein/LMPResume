@@ -52,6 +52,7 @@ class StateManager(StateMgrProtocol):
     logger: logging.Logger
     do_capture: bool | None
     capture: CaptureManager
+    dump_callback: Callable[[], None]
 
     @abstractmethod
     def user_init(self) -> None: ...
@@ -87,8 +88,12 @@ class StateManager(StateMgrProtocol):
         self.ptr = ptr
         self.state = state
 
-    def attach(self, comm: Comm) -> None:
+    def attach(self, dump_callback: Callable[[], None], comm: Comm) -> None:
         self.comm = comm
+        def fake_callback():
+            return None
+
+        self.dump_callback = dump_callback if comm.Get_rank() == 0 else fake_callback
 
         self.init()
 
@@ -96,7 +101,7 @@ class StateManager(StateMgrProtocol):
         if self.rank == 0: self.logger.info(message)
 
     def __enter__(self) -> Self:
-        self.lmp = lammps.lammps(self.lmpname)
+        self.lmp = lammps.lammps(self.lmpname, comm=self.comm)
 
         return self
 
@@ -113,7 +118,7 @@ class StateManager(StateMgrProtocol):
 
     def rebind(self) -> lammps.lammps:
         self.lmp.close()
-        self.lmp = lammps.lammps(self.lmpname)
+        self.lmp = lammps.lammps(self.lmpname, comm=self.comm)
         return self.lmp
 
     @abstractmethod
@@ -139,6 +144,7 @@ class StateManager(StateMgrProtocol):
 
     def time_check(self) -> None:
         if time.time() - self.starttime > self.max_time - self.delta_safe:
+            self.dump_callback()
             raise NoTimeLeft()
 
     def find_restart(self) -> Path:
@@ -234,6 +240,98 @@ class StateManager(StateMgrProtocol):
                 self.time_check()
 
         with self.capture.file(): self.end()
+
+
+
+class Stage:
+    stage_key: str
+    stage_len: int
+    manager: StateManager
+    additional: int = 0
+
+    def __init__(self, manager: StateManager, additional: int = 0, name: str | None = None) -> None:
+        self.manager = manager
+        self.additional = additional
+        if name is not None:
+            self.stage_key = name
+        if not hasattr(self, "stage_key"):
+            self.stage_key = self.__class__.__name__
+
+    @abstractmethod
+    def go(self): ...
+
+
+class LongStage(Stage):
+    def get_time_tries(self) -> tuple[float, int]:
+        total_time: float = 0
+        tries: int = 0
+        if self.stage_key in self.manager.state:
+            total_time = self.manager.state[self.stage_key]["total_time"]
+            tries      = self.manager.state[self.stage_key]["tries"]
+        else:
+            self.manager.state[self.stage_key] = {
+                "total_time": total_time,
+                "tries": tries
+                }
+        return total_time, tries
+
+    def go(self):
+        total_time, tries = self.get_time_tries()
+        self.manager.dump_callback()
+        print(f"Starting {self.stage_key}")
+
+        self.prerun()
+        for it in range(tries, self.stage_len):
+            start_time = time.time()
+
+            self.run(it)
+
+            end_time = time.time()
+            total_time += end_time - start_time
+            tries += 1
+            self.manager.state[self.stage_key] = {
+                "total_time": total_time,
+                "tries": tries
+                }
+
+            self.manager.time_check()
+
+        self.manager.dump_callback()
+        self.postrun()
+        self.manager.dump_callback()
+        print(f"{self.stage_key} end")
+
+    @abstractmethod
+    def prerun(self): ...
+
+    @abstractmethod
+    def run(self, it: int): ...
+
+    @abstractmethod
+    def postrun(self): ...
+
+
+class FastStage(Stage):
+    def go(self):
+        if self.stage_key in self.manager.state:
+            started = self.manager.state[self.stage_key]["started"]
+            ended      = self.manager.state[self.stage_key]["ended"]
+            if started and (not ended):
+                self.manager.logger.warning(f"The stage {self.stage_key} has been started, but not ended. Starting over...")
+        else:
+            self.manager.state[self.stage_key] = {
+                "started": True,
+                "ended": False
+                }
+        self.manager.dump_callback()
+        print(f"Starting {self.stage_key}")
+        self.run()
+        self.manager.state[self.stage_key]["ended"] = True
+        self.manager.dump_callback()
+        print(f"{self.stage_key} end")
+
+    @abstractmethod
+    def run(self): ...
 
 
 if __name__ == "__main__":

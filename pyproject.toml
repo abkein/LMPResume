@@ -20,11 +20,10 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Physics",
     "Topic :: Scientific/Engineering :: Chemistry",
 ]
-dependencies = ['toml', 'mpi4py', 'lammps', 'marshmallow']
+dependencies = ['toml', 'mpi4py', 'lammps', 'marshmallow', 'indexlib']
 
 [project.scripts]
 LMPResume = "LMPResume.main:main"
-LMPRun = "LMPResume.run.main"
 
 [project.urls]
 "Homepage" = "https://github.com/Architect0rr/MDDPN"

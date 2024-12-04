@@ -192,7 +192,7 @@ class AZAZ:
                 index.register(self.modulepath, "sim", True, "Simulation run file")
         index.commit()
 
-    def reborn(self):
+    def reborn(self) -> int:
         self.make_index()
         self.simulation.run_no += 1
         self.dumpit()
@@ -206,7 +206,7 @@ class AZAZ:
         sbatch.options.tag = self.tag
         sbatch.options.job_number = self.simulation.run_no
         if not sbatch.check(False):
-            return
+            return 1
 
         max_time = sbatch.platform.get_timelimit(sbatch.options.partition) if sbatch.options.partition is not None else 0
         args_cmd = f"{self.modulepath.as_posix()} --internal --cwd={self.cwd.as_posix()} --max_time={max_time}"
@@ -231,8 +231,9 @@ class AZAZ:
         )
 
         sbatch.run(True, poll_cmd=after_cmd)
+        return 0
 
-    def main(self):
+    def main(self) -> int:
         from mpi4py import MPI
         self.simulation.attach(self.dumpit, MPI.COMM_WORLD)
         try:
@@ -253,8 +254,9 @@ class AZAZ:
         MPI.COMM_WORLD.Barrier()
 
         MPI.Finalize()
+        return 0
 
-    def run(self):
+    def run(self) -> int:
         return self.main() if self.internal else self.reborn()
 
     @property
@@ -266,8 +268,9 @@ class AZAZ:
         return self.statefile.exists()
 
 
-def main():
+def main() -> int:
     return AZAZ().run()
+
 
 if __name__ == "__main__":
     os.environ["OMP_NUM_THREADS"] = "1"

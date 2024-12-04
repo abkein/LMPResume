@@ -6,8 +6,6 @@
 # This software is released under the MIT License.
 # https://opensource.org/licenses/MIT
 
-# Last modified: 02-05-2024 23:40:24
-
 import os
 import io
 import sys

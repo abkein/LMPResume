@@ -6,8 +6,6 @@
 # This software is released under the MIT License.
 # https://opensource.org/licenses/MIT
 
-# Last modified: 21-10-2024 04:41:54
-
 import time
 import logging
 from pathlib import Path
@@ -53,6 +51,7 @@ class StateManager(StateMgrProtocol):
     do_capture: bool | None
     capture: CaptureManager
     dump_callback: Callable[[], None]
+    stages: list['Stage']
 
     @abstractmethod
     def user_init(self) -> None: ...
@@ -120,9 +119,6 @@ class StateManager(StateMgrProtocol):
         self.lmp.close()
         self.lmp = lammps.lammps(self.lmpname, comm=self.comm)
         return self.lmp
-
-    @abstractmethod
-    def scheme(self) -> Iterable[Callable[[], None]]: ...
 
     @abstractmethod
     def build(self): ...
@@ -230,30 +226,27 @@ class StateManager(StateMgrProtocol):
     def run(self, endflag: bool) -> None:
         if not endflag:
             last_ptr = self.ptr
-            for i, func in enumerate(self.scheme()):
+            for i, stage in enumerate(self.stages):
                 if i < last_ptr: continue
 
-                self.logger.info(f"Running {func.__name__}")
-                with self.capture.file(): func()
+                stage.attach(self)
+                self.logger.info(f"Running {stage.stage_key}")
+                with self.capture.file(): stage.go()
 
                 self.ptr += 1
                 self.time_check()
+                self.dump_callback()
 
         with self.capture.file(): self.end()
-
 
 
 class Stage:
     stage_key: str
     stage_len: int
     manager: StateManager
-    additional: int = 0
 
-    def __init__(self, manager: StateManager, additional: int = 0, name: str | None = None) -> None:
+    def attach(self, manager: StateManager, *args, **kwargs) -> None:
         self.manager = manager
-        self.additional = additional
-        if name is not None:
-            self.stage_key = name
         if not hasattr(self, "stage_key"):
             self.stage_key = self.__class__.__name__
 
@@ -262,6 +255,12 @@ class Stage:
 
 
 class LongStage(Stage):
+    additional: int = 0
+
+    def attach(self, manager: StateManager, additional: int = 0, *args, **kwargs) -> None:
+        super().attach(manager, *args, **kwargs)
+        self.additional = additional
+
     def get_time_tries(self) -> tuple[float, int]:
         total_time: float = 0
         tries: int = 0
@@ -281,6 +280,7 @@ class LongStage(Stage):
         print(f"Starting {self.stage_key}")
 
         self.prerun()
+        self.stage_len += self.additional
         for it in range(tries, self.stage_len):
             start_time = time.time()
 

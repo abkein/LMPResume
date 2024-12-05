@@ -113,12 +113,16 @@ class StateManager(StateMgrProtocol):
         # self.lmp.finalize()
 
         if exc_type != NoTimeLeft and self.rank == 0:
-            (self.cwd / "NORESTART").touch(exist_ok=True)
+            self.norestart()
 
     def rebind(self) -> lammps.lammps:
         self.lmp.close()
         self.lmp = lammps.lammps(self.lmpname, comm=self.comm)
         return self.lmp
+
+    def norestart(self) -> None:
+        self.logger.info("Creating norestart file")
+        (self.cwd / "NORESTART").touch(exist_ok=True)
 
     @abstractmethod
     def build(self): ...
@@ -188,8 +192,11 @@ class StateManager(StateMgrProtocol):
             self.lmp.command(f"run 0")
         self.logger.debug("Readed restart")
 
-    def first_run(self) -> None:
+    def first_run(self, norestart: bool = False) -> None:
         self.logger.info("Running first time")
+        if norestart:
+            self.logger.info("norestart used")
+            self.norestart()
 
         self.build()
 

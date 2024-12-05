@@ -17,11 +17,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Union, Any, Type
 
-# import mpi4py
-# mpi4py.rc.initialize = False
-# mpi4py.rc.finalize = False
-# from mpi4py import MPI
-
+# from mpi4py import MPI  // imported as needed
 import pysbatch_ng
 from pysbatch_ng.execs import CMD
 from indexlib import Index
@@ -79,6 +75,7 @@ class AZAZ:
     conffile: Path
     modulepath: Path
     tag: int | None = None
+    __norestart: bool = False
 
     def __init__(self):
         parser = argparse.ArgumentParser('LMPResume')
@@ -93,6 +90,7 @@ class AZAZ:
         parser.add_argument('--conf', action='store', type=str, default=None)
 
         parser.add_argument('--end', action='store_true')
+        parser.add_argument('--norestart', action='store_true')
         parser.add_argument('--restartfile', action='store', type=str, default=None, help="Restart file to read.")
         parser.add_argument('--ptr', action='store', type=int, default=0, help="Default: 0")
         args = parser.parse_args()
@@ -152,6 +150,9 @@ class AZAZ:
                 d = json.load(fp)
             d.update(data)
             data = d
+
+        if args.norestart is not None:
+            self.__norestart = True
 
         _sim = self.managerSchema.load(data)
         assert isinstance(_sim, StateManager)
@@ -244,7 +245,7 @@ class AZAZ:
                     except FirstRunFallbackTrigger:
                         st.first_run()
                 else:
-                    st.first_run()
+                    st.first_run(self.__norestart)
         except NoTimeLeft:
             pass
         finally:

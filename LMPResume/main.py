@@ -22,7 +22,6 @@ import pysbatch_ng
 from pysbatch_ng.execs import CMD
 from indexlib import Index
 
-from .compress import copy_and_compress_folder_lzma
 from .state import StateManager, StateManagerSchema
 from .meta import NoTimeLeft, FirstRunFallbackTrigger
 
@@ -76,11 +75,13 @@ class AZAZ:
     modulepath: Path
     tag: int | None = None
     __norestart: bool = False
+    valgrind: bool
 
     def __init__(self):
         parser = argparse.ArgumentParser('LMPResume')
         parser.add_argument("module", action="store", type=str, help="Module path")
         parser.add_argument("--internal", action="store_true", default=False)
+        parser.add_argument("--valgrind", action="store_true", default=False)
         parser.add_argument('--cwd', action='store', type=str, default=None, help="Current working directory. If not specified, default unix pwd is used.")
         parser.add_argument('--max_time', action='store', type=int, default=0, help="Max run time in seconds. If unknown, default 0 should be used. -1 if unlimited.")
 
@@ -104,6 +105,8 @@ class AZAZ:
                 raise FileNotFoundError(f"Specified cwd does not exists: {self.cwd.as_posix()}")
 
         self.conffile = Path(args.conf).resolve() if args.conf is not None else self.cwd / filename_conffile
+
+        self.valgrind = args.valgrind
 
         data: dict[str, Any] = {"cwd": self.cwd.as_posix()}
 
@@ -198,10 +201,6 @@ class AZAZ:
         self.simulation.run_no += 1
         self.dumpit()
 
-        dest_fldr = Path("/scratch/perevoshchikyy/backups/")
-        dest_fldr = dest_fldr / f"{int(time())}_{self.cwd.name}"
-        copy_and_compress_folder_lzma(self.cwd, dest_fldr, 10)
-
         sbatch = self.get_sbatch()
 
         sbatch.options.tag = self.tag
@@ -210,17 +209,21 @@ class AZAZ:
             return 1
 
         max_time = sbatch.platform.get_timelimit(sbatch.options.partition) if sbatch.options.partition is not None else 0
+        _exec = "LMPResume"
         args_cmd = f"{self.modulepath.as_posix()} --internal --cwd={self.cwd.as_posix()} --max_time={max_time}"
+        if self.valgrind:
+            _exec = "valgrind"
+            args_cmd = f" LMPResume " + args_cmd
         if self.endflag:
             args_cmd += f" --end"
 
         if sbatch.options.cmd is None:
             sbatch.options.cmd = CMD(
-                executable="LMPResume",
+                executable=_exec,
                 args=args_cmd
             )
         else:
-            sbatch.options.cmd.executable = "LMPResume"
+            sbatch.options.cmd.executable = _exec
             sbatch.options.cmd.args = args_cmd
 
         after_args = f"{self.modulepath.as_posix()} --cwd={self.cwd.as_posix()} --conf={self.conffile.as_posix()}"

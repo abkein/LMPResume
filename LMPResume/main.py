@@ -76,12 +76,14 @@ class AZAZ:
     tag: int | None = None
     __norestart: bool = False
     valgrind: bool
+    valgrind_track_origin: bool
 
     def __init__(self):
         parser = argparse.ArgumentParser('LMPResume')
         parser.add_argument("module", action="store", type=str, help="Module path")
         parser.add_argument("--internal", action="store_true", default=False)
         parser.add_argument("--valgrind", action="store_true", default=False)
+        parser.add_argument("--valgrind_track_origin", action="store_true", default=False)
         parser.add_argument('--cwd', action='store', type=str, default=None, help="Current working directory. If not specified, default unix pwd is used.")
         parser.add_argument('--max_time', action='store', type=int, default=0, help="Max run time in seconds. If unknown, default 0 should be used. -1 if unlimited.")
 
@@ -107,6 +109,7 @@ class AZAZ:
         self.conffile = Path(args.conf).resolve() if args.conf is not None else self.cwd / filename_conffile
 
         self.valgrind = args.valgrind
+        self.valgrind_track_origin = args.valgrind_track_origin
 
         data: dict[str, Any] = {"cwd": self.cwd.as_posix()}
 
@@ -213,6 +216,8 @@ class AZAZ:
         args_cmd = f"{self.modulepath.as_posix()} --internal --cwd={self.cwd.as_posix()} --max_time={max_time}"
         if self.valgrind:
             _exec = "valgrind"
+            if self.valgrind_track_origin:
+                _exec += " --track-origins=yes"
             args_cmd = f" LMPResume " + args_cmd
         if self.endflag:
             args_cmd += f" --end"

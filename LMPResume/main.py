@@ -12,7 +12,6 @@ import json
 import toml
 import argparse
 import importlib.util
-from time import time
 from pathlib import Path
 from types import ModuleType
 from typing import Union, Any, Type

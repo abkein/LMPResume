@@ -8,8 +8,6 @@
 
 from typing import Union
 
-from mpi4py import rc
-rc.initialize = False  # Prevents automatic MPI initialization
 from mpi4py import MPI
 
 

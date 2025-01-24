@@ -16,7 +16,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Union, Any, Type
 
-# from mpi4py import MPI  // imported as needed
+from mpi4py import MPI  # imported as needed
 import pysbatch_ng
 from pysbatch_ng.execs import CMD
 from indexlib import Index
@@ -242,7 +242,7 @@ class AZAZ:
         return 0
 
     def main(self) -> int:
-        from mpi4py import MPI
+        # from mpi4py import MPI
         self.simulation.attach(self.dumpit, MPI.COMM_WORLD)
         try:
             with self.simulation as st:

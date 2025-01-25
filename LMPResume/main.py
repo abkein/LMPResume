@@ -214,6 +214,7 @@ class AZAZ:
         compress.copy_and_compress_folder_lzma(self.cwd, dest_fldr, backup_maxsize)
 
     def reborn(self) -> int:
+        self.back()
         self.make_index()
         self.simulation.run_no += 1
         self.dumpit()

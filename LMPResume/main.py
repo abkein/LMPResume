@@ -12,6 +12,7 @@ import json
 import toml
 import argparse
 import importlib.util
+from time import time
 from pathlib import Path
 from types import ModuleType
 from typing import Union, Any, Type
@@ -19,7 +20,7 @@ from typing import Union, Any, Type
 from mpi4py import MPI  # imported as needed
 import pysbatch_ng
 from pysbatch_ng.execs import CMD
-from indexlib import Index
+from indexlib import Index, compress
 
 from .state import StateManager, StateManagerSchema
 from .meta import NoTimeLeft, FirstRunFallbackTrigger
@@ -197,6 +198,20 @@ class AZAZ:
             if not index.isregistered(self.modulepath):
                 index.register(self.modulepath, "sim", True, "Simulation run file")
         index.commit()
+
+    def back(self):
+        backup_folder_str = os.environ.get("INDEX_BACKUP_FOLDER")
+        backup_maxsize_str = os.environ.get("INDEX_BACKUP_MAXSIZE_BYTES")
+        backup_maxsize: int = 0
+        if backup_maxsize_str is not None:
+            try:
+                backup_maxsize = int(backup_maxsize_str)
+            except Exception:
+                backup_maxsize = 0
+
+        dest_fldr = Path("/scratch/perevoshchikyy/backups/" if backup_folder_str is None else backup_folder_str)
+        dest_fldr = dest_fldr / f"{int(time())}_{self.cwd.name}"
+        compress.copy_and_compress_folder_lzma(self.cwd, dest_fldr, backup_maxsize)
 
     def reborn(self) -> int:
         self.make_index()

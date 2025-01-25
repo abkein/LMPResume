@@ -214,10 +214,12 @@ class AZAZ:
         _exec = "LMPResume"
         args_cmd = f"{self.modulepath.as_posix()} --internal --cwd={self.cwd.as_posix()} --max_time={max_time}"
         if self.valgrind:
-            _exec = "valgrind"
+            vlgp = os.getenv("VALGRIND_EXEC")
+            _exec = "valgrind" if vlgp is None else vlgp
             args_cmd = f" LMPResume " + args_cmd
             if self.valgrind_track_origin:
                 args_cmd = " --track-origins=yes" + args_cmd
+            args_cmd = "--tool=memcheck" + args_cmd
         if self.endflag:
             args_cmd += f" --end"
 

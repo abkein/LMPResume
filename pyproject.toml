@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "LMPResume"
-version = "0.0.3"
+version = "0.0.4"
 authors = [{ name = "Egor Perevoshchikov", email = "abkein@abkein.ru" }]
 description = "Test package"
 readme = "README.md"
@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Physics",
     "Topic :: Scientific/Engineering :: Chemistry",
 ]
-dependencies = ['toml', 'mpi4py', 'lammps', 'marshmallow', 'indexlib>=0.0.2']
+dependencies = ['toml', 'mpi4py', 'lammps', 'marshmallow', 'indexlib>=0.0.2', 'pysbatch-ng>=0.0.4']
 
 [project.scripts]
 LMPResume = "LMPResume.main:main"

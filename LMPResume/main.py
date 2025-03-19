@@ -9,24 +9,22 @@
 import os
 import sys
 import json
-import toml
 import argparse
 import importlib.util
-from time import time
 from pathlib import Path
 from types import ModuleType
 from typing import Union, Any, Type
 
 from mpi4py import MPI  # imported as needed
 import pysbatch_ng
-from pysbatch_ng.execs import CMD
-from indexlib import Index, compress
+from indexlib import Index
 
 from .state import StateManager, StateManagerSchema
 from .meta import NoTimeLeft, FirstRunFallbackTrigger
 
 
 filename_conffile: str = "sbatch.toml"
+__my__name__: str = "LMPResume"
 
 
 def load_script(module_path: Path) -> ModuleType:
@@ -35,7 +33,7 @@ def load_script(module_path: Path) -> ModuleType:
     module_init = module_path / "__init__.py"
     if not module_init.exists():
         with module_init.open("w") as fp:
-            fp.write("# This file was automatically created by LMPResume")
+            fp.write(f"# This file was automatically created by {__my__name__}")
             fp.write("")
             fp.write(f"from . import {module_name}")
 
@@ -64,7 +62,7 @@ def load_schema(script: ModuleType) -> Type[StateManagerSchema]:
     return schema
 
 
-class AZAZ:
+class Resume:
     simulation: StateManager
     cwd: Path
     managerSchema: StateManagerSchema
@@ -75,11 +73,12 @@ class AZAZ:
     modulepath: Path
     tag: int | None = None
     __norestart: bool = False
+    max_time: int = 0
     valgrind: bool
     valgrind_track_origin: bool
 
     def __init__(self):
-        parser = argparse.ArgumentParser('LMPResume')
+        parser = argparse.ArgumentParser(__my__name__)
         parser.add_argument("module", action="store", type=str, help="Module path")
         parser.add_argument("--internal", action="store_true", default=False)
         parser.add_argument("--valgrind", action="store_true", default=False)
@@ -110,6 +109,8 @@ class AZAZ:
 
         self.valgrind = args.valgrind
         self.valgrind_track_origin = args.valgrind_track_origin
+
+        self.max_time = args.max_time
 
         data: dict[str, Any] = {"cwd": self.cwd.as_posix()}
 
@@ -170,20 +171,6 @@ class AZAZ:
         with self.statefile.open('w') as fp:
             json.dump(d, fp)
 
-    def get_sbatch(self):
-        pysbatch_ng.log.configure('screen')
-        if self.conffile.exists():
-            with self.conffile.open('r') as fp:
-                d = toml.load(fp)
-            sbatch = pysbatch_ng.Sbatch.from_schema(d)
-            if not isinstance(sbatch, pysbatch_ng.Sbatch):
-                raise RuntimeError("")
-            if not sbatch.check(False):
-                raise RuntimeError("")
-        else:
-            sbatch = pysbatch_ng.Sbatch(pysbatch_ng.Options(), pysbatch_ng.Platform(), self.cwd)
-        return sbatch
-
     def make_index(self):
         index = Index(self.cwd)
         found, _, cat = index.find_category("slurm")
@@ -199,64 +186,38 @@ class AZAZ:
                 index.register(self.modulepath, "sim", True, "Simulation run file")
         index.commit()
 
-    def back(self):
-        backup_folder_str = os.environ.get("INDEX_BACKUP_FOLDER")
-        backup_maxsize_str = os.environ.get("INDEX_BACKUP_MAXSIZE_BYTES")
-        backup_maxsize: int = 0
-        if backup_maxsize_str is not None:
-            try:
-                backup_maxsize = int(backup_maxsize_str)
-            except Exception:
-                backup_maxsize = 0
-
-        dest_fldr = Path("/scratch/perevoshchikyy/backups/" if backup_folder_str is None else backup_folder_str)
-        dest_fldr = dest_fldr / f"{int(time())}_{self.cwd.name}"
-        compress.copy_and_compress_folder_lzma(self.cwd, dest_fldr, backup_maxsize)
 
     def reborn(self) -> int:
-        self.back()
         self.make_index()
         self.simulation.run_no += 1
         self.dumpit()
 
-        sbatch = self.get_sbatch()
+        pysbatch_ng.configure_logger('screen')
+        sbatch = pysbatch_ng.Sbatch.load(self.cwd)
 
-        sbatch.options.tag = self.tag
-        sbatch.options.job_number = self.simulation.run_no
-        if not sbatch.check(False):
-            return 1
+        part = sbatch.platform.get_default_partition()
+        if part is None: raise RuntimeError("No partition specified, no default partition found, falling")
 
-        max_time = sbatch.platform.get_timelimit(sbatch.options.partition) if sbatch.options.partition is not None else 0
-        _exec = "LMPResume"
-        args_cmd = f"{self.modulepath.as_posix()} --internal --cwd={self.cwd.as_posix()} --max_time={max_time}"
+        max_time = part.MaxTime.seconds if self.max_time != 0 else self.max_time
+
+        _cmd = f"{__my__name__} {self.modulepath.as_posix()} --internal --cwd={self.cwd.as_posix()} --max_time={max_time}"
         if self.valgrind:
             vlgp = os.getenv("VALGRIND_EXEC")
-            _exec = "valgrind" if vlgp is None else vlgp
-            args_cmd = f" LMPResume " + args_cmd
-            if self.valgrind_track_origin:
-                args_cmd = " --track-origins=yes" + args_cmd
-            args_cmd = "--tool=memcheck" + args_cmd
-        if self.endflag:
-            args_cmd += f" --end"
+            _add_cmd = f"{'valgrind' if vlgp is None else vlgp} --tool=memcheck"
+            if self.valgrind_track_origin: _add_cmd += " --track-origins=yes"
+            _cmd = f"{_add_cmd} {_cmd}"
+        if self.endflag: _cmd += " --end"
 
-        if sbatch.options.cmd is None:
-            sbatch.options.cmd = CMD(
-                executable=_exec,
-                args=args_cmd
-            )
-        else:
-            sbatch.options.cmd.executable = _exec
-            sbatch.options.cmd.args = args_cmd
-
-        after_args = f"{self.modulepath.as_posix()} --cwd={self.cwd.as_posix()} --conf={self.conffile.as_posix()}"
-        if self.tag is not None:
-            after_args += f" --tag={self.tag}"
-        after_cmd = CMD(
-            executable="LMPResume",
-            args=after_args
+        opts = pysbatch_ng.Options(
+            cmd=_cmd,
+            tag=self.tag,
+            job_number=self.simulation.run_no,
         )
 
-        sbatch.run(True, poll_cmd=after_cmd)
+        after_cmd = f"{__my__name__} {self.modulepath.as_posix()} --cwd={self.cwd.as_posix()} --conf={self.conffile.as_posix()}"
+        if self.tag is not None: after_cmd += f" --tag={self.tag}"
+
+        sbatch.run(opts, True, after_cmd)
         return 0
 
     def main(self) -> int:
@@ -265,20 +226,14 @@ class AZAZ:
         try:
             with self.simulation as st:
                 if self.restart_flag:
-                    try:
-                        st.restart(self.endflag, self.restartfile)
-                    except FirstRunFallbackTrigger:
-                        st.first_run()
-                else:
-                    st.first_run(self.__norestart)
-        except NoTimeLeft:
-            pass
+                    try: st.restart(self.endflag, self.restartfile)
+                    except FirstRunFallbackTrigger: st.first_run()
+                else: st.first_run(self.__norestart)
+        except NoTimeLeft: pass
         finally:
-            if MPI.COMM_WORLD.Get_rank() == 0:
-                self.dumpit()
+            if MPI.COMM_WORLD.Get_rank() == 0: self.dumpit()
 
         MPI.COMM_WORLD.Barrier()
-
         MPI.Finalize()
         return 0
 
@@ -295,7 +250,7 @@ class AZAZ:
 
 
 def main() -> int:
-    return AZAZ().run()
+    return Resume().run()
 
 
 if __name__ == "__main__":

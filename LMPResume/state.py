@@ -10,7 +10,7 @@ import time
 import logging
 from pathlib import Path
 from abc import abstractmethod
-from typing import Any, Iterable, Callable, Union, Type
+from typing import Any, Callable, Union, Type
 from typing_extensions import Self
 
 import lammps

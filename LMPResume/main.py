@@ -77,7 +77,7 @@ class Resume:
     valgrind: bool
     valgrind_track_origin: bool
 
-    def __init__(self):
+    def __init__(self) -> None:
         parser = argparse.ArgumentParser(__my__name__)
         parser.add_argument("module", action="store", type=str, help="Module path")
         parser.add_argument("--internal", action="store_true", default=False)
@@ -221,7 +221,6 @@ class Resume:
         return 0
 
     def main(self) -> int:
-        # from mpi4py import MPI
         self.simulation.attach(self.dumpit, MPI.COMM_WORLD)
         try:
             with self.simulation as st:

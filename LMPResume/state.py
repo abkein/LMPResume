@@ -76,7 +76,7 @@ class StateManager(StateMgrProtocol):
         delta_safe: int = 5*60,
         run_no: int = -1,
         ptr: int = 0,
-        state: dict[str, Any] = {}
+        state: dict[str, Any] = None
         ) -> None:
         self.cwd = cwd
         self.do_capture = do_capture
@@ -85,7 +85,7 @@ class StateManager(StateMgrProtocol):
         self.delta_safe = delta_safe
         self.run_no = run_no
         self.ptr = ptr
-        self.state = state
+        self.state = {} if state is None else state
 
     def attach(self, dump_callback: Callable[[], None], comm: Comm) -> None:
         self.comm = comm

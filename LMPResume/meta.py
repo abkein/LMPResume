@@ -8,7 +8,7 @@
 
 from pathlib import Path
 from abc import abstractmethod
-from typing import Protocol, Union, Iterable
+from typing import Protocol, Union, Iterable, Callable
 
 
 from .types import Comm
@@ -44,7 +44,7 @@ class StateMgrProtocol:
     def restart(self, endflag: bool, restartfile: Union[Path, None], ptr: Union[int, None]) -> None: ...
 
     @abstractmethod
-    def attach(self, comm: Comm, max_time: int) -> None: ...
+    def attach(self, dump_callback: Callable[[], None], comm: Comm) -> None: ...
 
 
 class NoTimeLeft(RuntimeError):

@@ -13,10 +13,11 @@ import argparse
 import importlib.util
 from pathlib import Path
 from types import ModuleType
-from typing import Union, Any, Type
+from typing import Any, Type
+from dataclasses import dataclass
 
-from mpi4py import MPI  # imported as needed
 import pysbatch
+from mpi4py import MPI  # imported as needed
 from indexlib import Index
 
 from .state import StateManager, StateManagerSchema
@@ -62,22 +63,63 @@ def load_schema(script: ModuleType) -> Type[StateManagerSchema]:
     return schema
 
 
-class Resume:
-    simulation: StateManager
-    cwd: Path
-    manager_schema: StateManagerSchema
-    endflag: bool
-    internal: bool
-    restartfile: Path | None = None
-    conffile: Path
-    modulepath: Path
-    tag: int | None = None
-    __norestart: bool = False
-    max_time: int = 0
-    valgrind: bool
-    valgrind_track_origin: bool
+capture_dict: dict[str, bool | None] = {"no": False, "yes": True, "release": None}
 
-    def __init__(self) -> None:
+
+@dataclass
+class Args:
+    module: Path
+    cwd: Path
+    conf: Path
+    internal: bool = False
+    valgrind: bool = False
+    valgrind_track_origin: bool = False
+    max_time: int = 0
+    capture: str = 'release'
+    tag: int | None = None
+    end: bool = False
+    norestart: bool = False
+    restartfile: Path | None = None
+    ptr: int = 0
+
+    def check(self) -> None:
+        if not self.module.exists():
+            raise FileNotFoundError(f"Specified module path does not exists: {self.module.as_posix()}")
+        if self.cwd is not None and not self.cwd.exists():
+            raise FileNotFoundError(f"Specified cwd does not exists: {self.cwd.as_posix()}")
+        if self.conf is not None and not self.conf.exists():
+            raise FileNotFoundError(f"Specified conf file does not exists: {self.conf.as_posix()}")
+        if self.restartfile is not None and not self.restartfile.exists():
+            raise FileNotFoundError(f"Specified restart file does not exists: {self.restartfile.as_posix()}")
+        if self.ptr < 0:
+            raise RuntimeError("Specified ptr cannot be less than zero")
+        if self.max_time < -1:
+            raise RuntimeError("Specified max_time cannot be less than -1")
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace) -> 'Args':
+        cwd = Path(args.cwd).resolve() if args.cwd is not None else Path.cwd()
+        conf = Path(args.conf).resolve() if args.conf is not None else cwd / filename_conffile
+        instance = cls(
+            module=Path(args.module).resolve(),
+            internal=args.internal,
+            valgrind=args.valgrind,
+            valgrind_track_origin=args.valgrind_track_origin,
+            cwd=cwd,
+            max_time=args.max_time,
+            capture=args.capture,
+            tag=args.tag,
+            conf=conf,
+            end=args.end,
+            norestart=args.norestart,
+            restartfile=Path(args.restartfile).resolve() if args.restartfile is not None else None,
+            ptr=args.ptr
+        )
+        instance.check()
+        return instance
+
+    @classmethod
+    def parse_args(cls) -> 'Args':
         parser = argparse.ArgumentParser(__my__name__)
         parser.add_argument("module", action="store", type=str, help="Module path")
         parser.add_argument("--internal", action="store_true", default=False)
@@ -95,83 +137,72 @@ class Resume:
         parser.add_argument('--norestart', action='store_true')
         parser.add_argument('--restartfile', action='store', type=str, default=None, help="Restart file to read.")
         parser.add_argument('--ptr', action='store', type=int, default=0, help="Default: 0")
-        args = parser.parse_args()
+        return cls.from_args(parser.parse_args())
 
-        self.internal = bool(args.internal)
 
-        self.cwd = Path.cwd()
-        if args.cwd is not None:
-            self.cwd = Path(args.cwd).resolve()
-            if not self.cwd.exists():
-                raise FileNotFoundError(f"Specified cwd does not exists: {self.cwd.as_posix()}")
+class Resume:
+    simulation: StateManager
+    cwd: Path
+    manager_schema: StateManagerSchema
+    endflag: bool
+    internal: bool
+    restartfile: Path | None = None
+    conffile: Path
+    modulepath: Path
+    tag: int | None = None
+    __norestart: bool = False
+    max_time: int = 0
+    valgrind: bool
+    valgrind_track_origin: bool
 
-        self.conffile = Path(args.conf).resolve() if args.conf is not None else self.cwd / filename_conffile
+    def __init__(self) -> None:
+        args = Args.parse_args()
 
+        self.internal = args.internal
+        self.cwd = args.cwd
+        self.conffile = args.conf
         self.valgrind = args.valgrind
         self.valgrind_track_origin = args.valgrind_track_origin
-
         self.max_time = args.max_time
 
         data: dict[str, Any] = {"cwd": self.cwd.as_posix()}
 
-        if not self.restart_flag:
-            do_capture: Union[bool, None] = None
-            if args.capture == 'no':        do_capture = False
-            elif args.capture == 'yes':     do_capture = True
-            elif args.capture == 'release': do_capture = None
-
-            if args.capture is not None:
-                data["capture"] = do_capture
-
-        self.modulepath = Path(args.module).resolve()
-        if not self.modulepath.exists():
-            raise FileNotFoundError(f"Specified module path does not exists: {self.modulepath.as_posix()}")
-
+        self.modulepath = args.module
         self.manager_schema = load_schema(load_script(self.modulepath))()
 
-        self.endflag = bool(args.end)
+        self.endflag = args.end
 
-        max_time: int = int(args.max_time)
+        data["max_time"] = args.max_time
 
-        data["max_time"] = max_time
+        self.tag = args.tag
+        self.restartfile = args.restartfile
 
-        if args.tag is not None:
-            self.tag = args.tag
-
-        if args.restartfile is not None:
-            self.restartfile = Path(args.restartfile).resolve()
-            if not self.restartfile.exists():
-                raise FileNotFoundError(f"Specified restart file does not exists: {self.restartfile.as_posix()}")
-
-        ptr: Union[int, None] = None
-        if args.ptr is not None:
-            ptr = int(args.ptr)
-            if ptr < 0:
-                raise RuntimeError("Specified ptr cannot be less than zero")
-
-        if ptr is not None:
-            data["ptr"] = ptr
+        data["ptr"] = args.ptr
 
         if self.restart_flag:
             with self.statefile.open('r') as fp:
                 d = json.load(fp)
+            if not isinstance(d, dict):
+                raise RuntimeError(f"State file {self.statefile.as_posix()} is not a valid JSON object")
             d.update(data)
             data = d
+        else:
+            data["capture"] = capture_dict[args.capture]
 
-        if args.norestart is not None:
-            self.__norestart = True
+        self.__norestart = args.norestart
 
         _sim = self.manager_schema.load(data)
-        assert isinstance(_sim, StateManager)
+        if not isinstance(_sim, StateManager):
+            raise TypeError(f"Module is expected to return a StateManager object, got: {type(_sim).__name__}")
         self.simulation = _sim
 
-    def dumpit(self):
+    def dumpit(self) -> None:
         d = self.manager_schema.dump(self.simulation)
         assert isinstance(d, dict)
         with self.statefile.open('w') as fp:
             json.dump(d, fp)
 
-    def make_index(self):
+    def make_index(self) -> None:
         index = Index(self.cwd)
         found, _, _ = index.find_category("slurm")
         if not found:

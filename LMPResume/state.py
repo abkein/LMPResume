@@ -76,7 +76,7 @@ class StateManager(StateMgrProtocol):
         delta_safe: int = 5*60,
         run_no: int = -1,
         ptr: int = 0,
-        state: dict[str, Any] = None
+        state: dict[str, Any] | None = None
         ) -> None:
         self.cwd = cwd
         self.do_capture = do_capture
@@ -155,7 +155,7 @@ class StateManager(StateMgrProtocol):
             with self.capture.file():
                 lmp_1 = lammps.lammps(self.lmpname)
                 lmp_1.command(f"read_restart {a_restart.as_posix()}")
-                lmp_1.command(f"run 0")
+                lmp_1.command("run 0")
                 step_a: Union[int, None] = lmp_1.get_thermo("step")
                 lmp_1.close()
 
@@ -167,7 +167,7 @@ class StateManager(StateMgrProtocol):
             with self.capture.file():
                 lmp_2 = lammps.lammps(self.lmpname)
                 lmp_2.command(f"read_restart {b_restart.as_posix()}")
-                lmp_2.command(f"run 0")
+                lmp_2.command("run 0")
                 step_b: Union[int, None] = lmp_2.get_thermo("step")
                 lmp_2.close()
 
@@ -189,7 +189,7 @@ class StateManager(StateMgrProtocol):
         self.logger.debug(f"CMD is: '{cmd}'")
         with self.capture.file():
             self.lmp.command(cmd)
-            self.lmp.command(f"run 0")
+            self.lmp.command("run 0")
         self.logger.debug("Readed restart")
 
     def first_run(self, norestart: bool = False) -> None:
@@ -204,7 +204,7 @@ class StateManager(StateMgrProtocol):
 
         self.initialize_system()
 
-        with self.capture.file(): self.lmp.command(f"run 0")
+        with self.capture.file(): self.lmp.command("run 0")
 
         self.setup()
 
@@ -223,7 +223,7 @@ class StateManager(StateMgrProtocol):
 
         self.read_restart(_restartfile)
 
-        with self.capture.file(): self.lmp.command(f"run 0")
+        with self.capture.file(): self.lmp.command("run 0")
 
         self.setup()
 
@@ -252,7 +252,7 @@ class Stage:
     stage_len: int
     manager: StateManager
 
-    def attach(self, manager: StateManager, *args, **kwargs) -> None:
+    def attach(self, manager: StateManager) -> None:  # , *args, **kwargs) -> None:
         self.manager = manager
         if not hasattr(self, "stage_key"):
             self.stage_key = self.__class__.__name__

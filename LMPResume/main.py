@@ -16,7 +16,7 @@ from types import ModuleType
 from typing import Union, Any, Type
 
 from mpi4py import MPI  # imported as needed
-import pysbatch_ng
+import pysbatch
 from indexlib import Index
 
 from .state import StateManager, StateManagerSchema
@@ -65,7 +65,7 @@ def load_schema(script: ModuleType) -> Type[StateManagerSchema]:
 class Resume:
     simulation: StateManager
     cwd: Path
-    managerSchema: StateManagerSchema
+    manager_schema: StateManagerSchema
     endflag: bool
     internal: bool
     restartfile: Path | None = None
@@ -127,7 +127,7 @@ class Resume:
         if not self.modulepath.exists():
             raise FileNotFoundError(f"Specified module path does not exists: {self.modulepath.as_posix()}")
 
-        self.managerSchema = load_schema(load_script(self.modulepath))()
+        self.manager_schema = load_schema(load_script(self.modulepath))()
 
         self.endflag = bool(args.end)
 
@@ -161,29 +161,29 @@ class Resume:
         if args.norestart is not None:
             self.__norestart = True
 
-        _sim = self.managerSchema.load(data)
+        _sim = self.manager_schema.load(data)
         assert isinstance(_sim, StateManager)
         self.simulation = _sim
 
     def dumpit(self):
-        d = self.managerSchema.dump(self.simulation)
+        d = self.manager_schema.dump(self.simulation)
         assert isinstance(d, dict)
         with self.statefile.open('w') as fp:
             json.dump(d, fp)
 
     def make_index(self):
         index = Index(self.cwd)
-        found, _, cat = index.find_category("slurm")
+        found, _, _ = index.find_category("slurm")
         if not found:
             index.register_category("slurm", "Slurm related files")
         if not index.isregistered(self.conffile):
-            index.register(self.conffile, "slurm", False, "Main slurm configuration file")
+            index.register_child(self.conffile, "slurm", False, "Main slurm configuration file")
         if index.issub(self.modulepath):
-            found, _, cat = index.find_category("sim")
+            found, _, _ = index.find_category("sim")
             if not found:
                 index.register_category("sim", "Simulation related files")
             if not index.isregistered(self.modulepath):
-                index.register(self.modulepath, "sim", True, "Simulation run file")
+                index.register_child(self.modulepath, "sim", True, "Simulation run file")
         index.commit()
 
 
@@ -192,8 +192,8 @@ class Resume:
         self.simulation.run_no += 1
         self.dumpit()
 
-        pysbatch_ng.configure_logger('screen')
-        sbatch = pysbatch_ng.Sbatch.load(self.cwd)
+        pysbatch.configure_logger('screen')
+        sbatch = pysbatch.Sbatch.load(self.cwd)
 
         part = sbatch.platform.get_default_partition()
         if part is None: raise RuntimeError("No partition specified, no default partition found, falling")
@@ -208,7 +208,7 @@ class Resume:
             _cmd = f"{_add_cmd} {_cmd}"
         if self.endflag: _cmd += " --end"
 
-        opts = pysbatch_ng.Options(
+        opts = pysbatch.Options(
             cmd=_cmd,
             tag=self.tag,
             job_number=self.simulation.run_no,

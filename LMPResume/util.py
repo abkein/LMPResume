@@ -30,14 +30,14 @@ def minilog(name: str) -> logging.Logger:
     logger.handlers.clear()
     logger.setLevel(logging.DEBUG)
     formatter: logging.Formatter = logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s')
-    soutHandler = logging.StreamHandler(stream=sys.stdout)
-    soutHandler.setLevel(logging.DEBUG)
-    soutHandler.setFormatter(formatter)
-    logger.addHandler(soutHandler)
-    serrHandler = logging.StreamHandler(stream=sys.stderr)
-    serrHandler.setFormatter(formatter)
-    serrHandler.setLevel(logging.WARNING)
-    logger.addHandler(serrHandler)
+    sout_handler = logging.StreamHandler(stream=sys.stdout)
+    sout_handler.setLevel(logging.DEBUG)
+    sout_handler.setFormatter(formatter)
+    logger.addHandler(sout_handler)
+    serr_handler = logging.StreamHandler(stream=sys.stderr)
+    serr_handler.setFormatter(formatter)
+    serr_handler.setLevel(logging.WARNING)
+    logger.addHandler(serr_handler)
     return logger
 
 
